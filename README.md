@@ -19,7 +19,7 @@ Pluginet kan automatisk anvende QML-styles på lag, når de tilføjes til QGIS.
 1
 Kopiér mappen `dmikg_auto` til QGIS plugin-mappen:
 
-`QGIS4/profiles/default/python/plugins/`
+`QGIS(3/4)/profiles/default/python/plugins/`
 
 Genstart QGIS eller reload pluginet.
 
@@ -28,4 +28,4 @@ Installér via QGIS ZIP-installation
 
 ## Version
 
-0.1.0
+0.3.0
