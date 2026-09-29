@@ -46,7 +46,6 @@ Pluginet sætter SVG-stien, når layoutet oprettes.
 
 ## Installation
 
-<<<<<<< HEAD
 1
 Kopiér mappen `dmikg_auto` til QGIS plugin-mappen:
 
