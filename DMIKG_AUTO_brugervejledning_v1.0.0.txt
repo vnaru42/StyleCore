@@ -1,0 +1,536 @@
+﻿Version 1.0.0
+
+
+1. HVAD ER DMIKG AUTO?
+-----------------------
+
+DMIKG Auto er lavet for at samle nogle af de ting, vi normalt selv skal holde styr på i QGIS.
+
+Pluginet sørger bl.a. for:
+
+- automatisk styling af lag
+- fælles QML-filer
+- fælles projektskabeloner
+- fælles printlayouts
+- automatisk indsættelse af SVG-filer i printlayouts
+- mulighed for lokale overrides, hvis et lag skal bruge en anden style
+- udviklertilstand til at gemme styles tilbage til den fælles mappe
+
+Tanken er, at så meget som muligt ligger ét fælles sted. Hvis en standardstyle eller et printlayout bliver opdateret, skal den enkelte bruger derfor ikke sidde og rette sin egen kopi manuelt.
+
+
+2. DEN FÆLLES MAPPE
+-------------------
+
+Pluginet arbejder ud fra én fælles ROOT-mappe.
+
+Den forventede struktur er:
+
+QGIS_komplet_stytem
+|
+|-- layer_styles
+|-- template_projects
+|-- layouts
+
+ROOT-mappen vælges under DMIKG Auto -> Indstillinger.
+
+Det er vigtigt, at undermapperne hedder præcis:
+
+layer_styles
+template_projects
+layouts
+
+Hvis hele QGIS_komplet_stytem en dag bliver flyttet, skal man normalt kun ændre ROOT-stien i indstillingerne.
+
+Man skal altså ikke rette stier rundt omkring i pluginet, så længe strukturen og mappenavnene bevares.
+
+
+3. DMIKG-KNAPPEN
+----------------
+
+Pluginet ligger som én knap i QGIS' værktøjslinje.
+
+Når man trykker på knappen, åbnes en dropdown-menu.
+
+Her findes:
+
+Indstillinger...
+Automatisk styling
+
+PRINT
+    [de printlayouts der er fundet]
+
+Indstillinger åbner pluginets opsætning.
+
+Automatisk styling kan slås til og fra direkte fra menuen.
+
+Under PRINT bliver alle .qpt-filer fra den fælles layouts-mappe vist automatisk.
+
+
+4. AUTOMATISK STYLING
+---------------------
+
+Når automatisk styling er slået til, holder pluginet øje med nye lag, der bliver tilføjet til projektet.
+
+For et almindeligt lag leder pluginet efter:
+
+ROOT\layer_styles\<lagnavn>.qml
+
+Eksempel:
+
+Hvis laget hedder:
+
+V_FIKSPUNKTER_DK
+
+leder pluginet efter:
+
+ROOT\layer_styles\V_FIKSPUNKTER_DK.qml
+
+Hvis filen findes, bliver den indlæst automatisk.
+
+Det betyder, at navnet på QML-filen som udgangspunkt skal være det samme som navnet på laget.
+
+
+5. ÆNDRING AF EN FÆLLES STANDARDSTYLE
+-------------------------------------
+
+Hvis en style skal ændres for alle, er den letteste løsning at opdatere QML-filen i layer_styles.
+
+Eksempel:
+
+ROOT\layer_styles\V_FIKSPUNKTER_DK.qml
+
+Når filen bliver erstattet med en nyere version, vil pluginet bruge den nye style fremover.
+
+Man behøver ikke ændre pluginet eller lave en ny plugin-version, bare fordi en QML-fil er blevet ændret.
+
+
+6. OVERRIDES
+------------
+
+I Indstillinger vises de styles, pluginet kender.
+
+En style kan overskrives lokalt ved at dobbeltklikke på style-stien og vælge en anden QML-fil.
+
+Når det er gjort, står reglen som:
+
+Tilpasset
+
+Den valgte fil bliver herefter brugt i stedet for standardfilen i layer_styles.
+
+Det er nyttigt, hvis man midlertidigt skal bruge en særlig style, eller hvis en bestemt style ligger et andet sted.
+
+Vigtigt:
+En override i Indstillinger er lokal for den enkelte bruger. Den bliver ikke automatisk sendt ud til alle kolleger.
+
+Hvis en override ikke længere skal bruges, markeres rækken og der trykkes:
+
+Nulstil valgt
+
+Herefter går reglen tilbage til standardfilen i ROOT\layer_styles.
+
+
+7. BRUGERREGLER
+---------------
+
+Det er også muligt at oprette en manuel regel med knappen:
+
+Tilføj
+
+Her kan man angive et lagnavn og vælge en QML-fil.
+
+En brugerregel bruges, hvis der ikke allerede findes en almindelig standardregel, eller hvis man vil knytte et bestemt lagnavn til en bestemt fil.
+
+Brugerregler kan fjernes igen med:
+
+Fjern
+
+Standardregler fjernes ikke fra listen på samme måde, fordi de bliver fundet ud fra indholdet i layer_styles.
+
+
+8. GEOJSON
+----------
+
+Nogle GeoJSON-filer får style ud fra slutningen af filnavnet i stedet for det fulde lagnavn.
+
+Pluginet kender disse regler:
+
+-kon-observationer  -> kon_observationer.qml
+-kon-punkter        -> kon_punkter.qml
+-observationer      -> observationer.qml
+-punkter            -> punkter.qml
+
+QML-filerne ligger også i:
+
+ROOT\layer_styles
+
+Eksempel:
+
+En GeoJSON-fil der slutter på:
+
+-kon-punkter.geojson
+
+vil bruge:
+
+ROOT\layer_styles\kon_punkter.qml
+
+GeoJSON-reglerne kan også få en lokal override via Indstillinger på samme måde som de almindelige lagstyles.
+
+
+9. SKABELON_MAIN
+----------------
+
+Når projektet SKABELON_MAIN åbnes, gennemgår pluginet lagene i projektet og anvender de styles, der passer til dem.
+
+Det gør det muligt at holde hovedskabelonen opdateret med de fælles QML-filer uden at skulle rette alle styles manuelt i selve projektfilen.
+
+
+10. PROJEKTSKABELONER
+---------------------
+
+Fælles QGIS-projektskabeloner lægges i:
+
+ROOT\template_projects
+
+Pluginet synkroniserer .qgz- og .qgs-filer herfra til brugerens lokale QGIS-profil.
+
+Der kopieres kun, hvis:
+
+- skabelonen ikke allerede findes lokalt, eller
+- filen på fællesdrevet er nyere end den lokale kopi
+
+Det betyder, at en skabelon kan opdateres centralt og derefter automatisk komme ud til brugerne.
+
+Hvis en ny projektskabelon skal deles:
+
+1. Gem projektet som .qgz eller .qgs.
+2. Læg filen i ROOT\template_projects.
+3. Start/genstart QGIS efter behov.
+
+Pluginet sørger derefter for den lokale kopi.
+
+
+11. PRINTLAYOUTS
+----------------
+
+Fælles printlayouts ligger som .qpt-filer i:
+
+ROOT\layouts
+
+Alle .qpt-filer i mappen bliver vist automatisk under PRINT i DMIKG-menuen.
+
+Eksempel:
+
+ROOT\layouts\A4_standard.qpt
+ROOT\layouts\Nivellement.qpt
+
+vil blive vist som omtrent:
+
+PRINT
+    A4_standard
+    Nivellement
+
+Når man vælger et layout, opretter pluginet et nyt printlayout i det aktuelle projekt og åbner Layout Designer.
+
+Hvis samme layout allerede findes i projektet, får den nye kopi automatisk et nyt navn, f.eks.:
+
+A4_standard
+A4_standard_2
+A4_standard_3
+
+
+12. MAIN_MAP
+------------
+
+Hvis et map-item i QPT-filen har Item ID:
+
+main_map
+
+sætter pluginet automatisk kortet til det aktuelle udsnit i QGIS-canvas.
+
+Pluginet tager højde for kortfeltets proportioner, så udsnittet ikke bare bliver strukket skævt.
+
+Det er derfor en god idé at bruge:
+
+main_map
+
+som Item ID på det primære kort i alle fælles layouts.
+
+
+13. MINI_MAP
+------------
+
+Et layout kan også have et ekstra map-item med Item ID:
+
+mini_map
+
+Når layoutet åbnes, starter mini_map med samme aktuelle kortområde som main_map.
+
+Derefter kan man selv zoome og panorere mini_map i Layout Designer.
+
+Der er ingen tvungen kobling mellem de to kort bagefter. Pluginet giver kun mini_map et fornuftigt startudsnit.
+
+
+14. SVG-FILER I PRINTLAYOUTS
+----------------------------
+
+SVG-filer kan ligge direkte i:
+
+ROOT\layouts
+
+Pluginet kobler dem til Picture-items ud fra filnavnet.
+
+Reglen er:
+
+SVG-filens navn uden .svg = Picture-elementets Item ID
+
+Eksempel:
+
+ROOT\layouts\kds_logo.svg
+
+skal passe til et Picture-item med:
+
+Item ID: kds_logo
+
+Et andet eksempel:
+
+nordpil.svg
+
+passer til:
+
+Item ID: nordpil
+
+På den måde behøver QPT-filen ikke indeholde en lang fast sti til fællesdrevet.
+
+Hvis ROOT-mappen flyttes, kan SVG-filerne stadig findes, så længe de ligger i layouts-mappen.
+
+
+15. SÅDAN LAVER MAN ET NYT PRINTLAYOUT
+--------------------------------------
+
+En simpel arbejdsgang er:
+
+1. Lav layoutet i QGIS.
+2. Giv hovedkortet Item ID "main_map".
+3. Hvis der er et ekstra kort, kan det få Item ID "mini_map".
+4. Giv eventuelle Picture-items samme Item ID som deres SVG-fil.
+5. Eksportér layoutet som en .qpt-fil.
+6. Læg .qpt-filen i ROOT\layouts.
+7. Læg eventuelle SVG-filer i samme layouts-mappe.
+
+Der skal normalt ikke ændres noget i pluginets kode.
+
+Næste gang DMIKG-menuen åbnes, synkroniseres printlayouts, og det nye layout bliver vist i menuen.
+
+
+16. UDVIKLERTILSTAND
+--------------------
+
+Under Indstillinger findes en udviklertilstand.
+
+Når den aktiveres, bliver knappen:
+
+Gem lagstyles...
+
+tilgængelig.
+
+Funktionen er lavet til at gemme styles fra lag i det aktuelle projekt tilbage til den fælles layer_styles-mappe.
+
+Når man trykker på Gem lagstyles:
+
+1. Der vises en liste over lagene i projektet.
+2. Man vælger de lag, der skal gemmes.
+3. Der skal indtastes udviklerkode = DMIKG
+4. Man skal bekræfte, før fælles filer bliver overskrevet.
+5. De valgte styles gemmes som QML.
+
+Ingen lag er valgt på forhånd.
+
+Der findes også:
+
+Vælg alle
+Fravælg alle
+
+Hvis en QML-fil allerede findes, laver pluginet en .bak-kopi før den eksisterende standardfil bliver erstattet.
+
+Eksempel:
+
+V_FIKSPUNKTER_DK.qml
+V_FIKSPUNKTER_DK.qml.bak
+
+
+17. GEM LAGSTYLES OG OVERRIDES
+------------------------------
+
+Hvis et lag bruger en ekstern override, og man vælger laget under Gem lagstyles, gemmer pluginet stadig til standardplaceringen i layer_styles.
+
+Den eksterne override-fil bliver ikke ændret.
+
+Hvis både en standardfil og en ekstern override findes, viser pluginet en ekstra advarsel før standardfilen bliver overskrevet.
+
+Det er med vilje, så man ikke ved en fejl tror, at den eksterne fil bliver ændret.
+
+
+18. TIL/FRA AF AUTOMATISK STYLING
+---------------------------------
+
+Automatisk styling kan slås fra direkte i DMIKG-menuen eller i Indstillinger.
+
+Når den er slået fra, bliver nye lag ikke automatisk stylet.
+
+Det kan være praktisk ved fejlsøgning eller hvis man midlertidigt vil se et lag helt uden DMIKG-styling.
+
+Printlayouts og de øvrige dele af pluginet kan stadig bruges.
+
+
+19. HVIS EN STYLE IKKE BLIVER INDLÆST
+-------------------------------------
+
+Tjek først følgende:
+
+1. Er Automatisk styling slået til?
+2. Hedder laget det samme som QML-filen?
+3. Ligger QML-filen i ROOT\layer_styles?
+4. Er ROOT-stien korrekt under Indstillinger?
+5. Findes filen faktisk på fællesdrevet?
+6. Har reglen en lokal override, som peger på en gammel eller slettet fil?
+7. Er der tale om en GeoJSON-fil, som skal matche en af suffix-reglerne?
+
+Hvis en almindelig standardstyle skal bruges:
+
+Lagnavn:
+V_FIKSPUNKTER_DK
+
+Fil:
+V_FIKSPUNKTER_DK.qml
+
+er den mest enkle opsætning.
+
+
+20. HVIS ET PRINTLAYOUT IKKE KOMMER FREM
+----------------------------------------
+
+Tjek:
+
+1. At filen er en .qpt-fil.
+2. At den ligger i ROOT\layouts.
+3. At ROOT-stien er korrekt.
+4. Luk og åbn DMIKG-menuen igen.
+
+Printmenuen bliver genopbygget, når dropdown-menuen åbnes.
+
+Hvis layoutet åbner, men kortet ikke bliver sat automatisk, så tjek at kortets Item ID er:
+
+main_map
+
+Et ekstra kort skal hedde:
+
+mini_map
+
+
+21. HVIS ET SVG-LOGO IKKE KOMMER FREM
+-------------------------------------
+
+Tjek at:
+
+1. SVG-filen ligger i ROOT\layouts.
+2. Picture-elementets Item ID er sat.
+3. Item ID og filnavn er helt ens bortset fra .svg.
+
+Eksempel:
+
+Fil:
+kds_logo.svg
+
+Item ID:
+kds_logo
+
+Hvis Picture-elementet i layoutet hedder noget andet, finder pluginet det ikke.
+
+
+22. HVIS ROOT-MAPPEN FLYTTES
+----------------------------
+
+Hvis hele QGIS_komplet_stytem bliver flyttet til en ny placering:
+
+1. Åbn DMIKG Auto -> Indstillinger.
+2. Vælg den nye ROOT-mappe.
+3. Gem indstillingerne.
+
+Så længe undermapperne stadig hedder:
+
+layer_styles
+template_projects
+layouts
+
+behøver man ikke ændre andet.
+
+
+23. TIPS
+--------
+
+- Hold QML-filnavne identiske med lagnavnene, hvor det er muligt.
+
+- Brug standardmappen layer_styles til styles, der skal gælde for alle.
+
+- Brug lokale overrides til særlige eller midlertidige behov. Undgå at bruge overrides som permanent fælles løsning, hvis en almindelig QML i layer_styles kan løse det.
+
+- Gem nye fælles printlayouts som QPT. Undgå at hardcode lokale bruger-stier i layoutet.
+
+- Brug main_map konsekvent i printlayouts. Så behøver pluginet ikke kende navnet på hvert enkelt layout.
+
+- Brug mini_map kun hvor det giver mening. Det starter samme sted som main_map, men kan bagefter justeres frit.
+
+- Læg SVG-filer i layouts-mappen og brug samme navn som Item ID. Det gør layouts mere flytbare.
+
+- Hvis en style ændres for alle, så opdatér QML-filen i layer_styles i stedet for at lave en lokal override.
+
+- Brug udviklertilstanden med omtanke. Den kan overskrive de fælles standardstyles.
+
+- Hvis noget ser forkert ud efter en ændring, så kig først på ROOT-stien, filnavnet og eventuelle overrides. Det er som regel dér fejlen ligger.
+
+
+24. KORT OPSLAG
+---------------
+
+Fælles styles:
+ROOT\layer_styles
+
+Projektskabeloner:
+ROOT\template_projects
+
+Printlayouts:
+ROOT\layouts
+
+SVG-filer:
+ROOT\layouts
+
+Primært kort i QPT:
+main_map
+
+Ekstra kort i QPT:
+mini_map
+
+Standardstyle:
+<lagnavn>.qml
+
+Automatisk styling:
+Kan slås til/fra i DMIKG-menuen eller Indstillinger
+
+Lokal specialstyle:
+Vælg anden QML under Indstillinger
+
+Ny fælles standardstyle:
+Læg/erstat QML i layer_styles
+
+Nyt fælles printlayout:
+Læg .qpt i layouts
+
+Nyt fælles SVG:
+Læg .svg i layouts og brug filnavnet som Picture Item ID
+
+
+25. VERSION
+-----------
+
+Denne vejledning gælder DMIKG Auto version 1.0.0.

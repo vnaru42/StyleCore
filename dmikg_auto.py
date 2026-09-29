@@ -2,17 +2,19 @@ import os
 import shutil
 
 from qgis.core import QgsProject, QgsMessageLog, QgsApplication, Qgis
-from qgis.PyQt.QtGui import QIcon
+from qgis.PyQt.QtGui import QFont, QIcon
 from qgis.PyQt.QtWidgets import QAction, QToolButton, QMenu
 from qgis.PyQt.QtCore import QSettings
 
 from .options import DmikgAutoOptionsFactory
+from .print_layouts import DmikgPrintLayouts
 from .config import (
     ENABLED_KEY,
     SETTINGS_KEY,
-    SHARED_STYLE_OVERRIDES,
+    GEOJSON_SUFFIX_STYLES,
     get_style_folder,
-    get_template_source,
+    get_template_folder,
+    get_geojson_style_path,
 )
 
 class DmikgAuto:
@@ -23,90 +25,78 @@ class DmikgAuto:
         self.action = None
         self.tool_button = None
         self.enabled_action = None
-        
+        self.print_manager = DmikgPrintLayouts(iface)
+        self.main_menu = None
+
     def initGui(self):
-        # Opdater lokal projektskabelon
-        self.sync_template()
-        
-        # Nye lag får altid auto-style
+        self.sync_templates()
+        self.print_manager.sync_layouts()
+
         QgsProject.instance().layersAdded.connect(self.layers_added)
 
-        # Reager når et projekt er færdigindlæst
         QgsProject.instance().readProject.connect(self.project_loaded)
 
-        # Registrer indstillingssiden
         self.options_factory = DmikgAutoOptionsFactory(
             enabled_changed_callback=self.set_auto_enabled,
-            root_folder_changed_callback=self.sync_template,
+            root_folder_changed_callback=self.sync_templates,
         )
-            
+
         self.iface.registerOptionsWidgetFactory(self.options_factory)
 
-        # Plugin-ikon
         plugin_dir = os.path.dirname(__file__)
         icon_path = os.path.join(plugin_dir, "kds_logo.png")
 
-        # Toolbar-knap
         self.tool_button = QToolButton()
         self.tool_button.setIcon(QIcon(icon_path))
         self.tool_button.setToolTip("DMIKG Auto")
-        
-        # Klik på selve ikonet åbner indstillinger
-        self.tool_button.clicked.connect(
-            self.open_settings
-        )
-        
-        # Lille pil giver dropdown
+
         self.tool_button.setPopupMode(
-            QToolButton.ToolButtonPopupMode.MenuButtonPopup
+            QToolButton.ToolButtonPopupMode.InstantPopup
         )
-        
-        menu = QMenu(self.tool_button)
-        
-        # Indstillinger
+        self.main_menu = QMenu(self.tool_button)
+
         settings_action = QAction(
             "Indstillinger...",
-            menu
+            self.main_menu
         )
-        
+
         settings_action.triggered.connect(
             self.open_settings
         )
-        
-        menu.addAction(settings_action)
-        menu.addSeparator()
-        
-        # Auto styling ON/OFF
+
+        self.main_menu.addAction(settings_action)
+
         self.enabled_action = QAction(
             "Automatisk styling",
-            menu
+            self.main_menu
         )
-        
+
         self.enabled_action.setCheckable(True)
-        
+
         enabled = QSettings().value(
             ENABLED_KEY,
             True,
             type=bool
         )
-        
+
         self.enabled_action.setChecked(enabled)
-        
+
         self.enabled_action.toggled.connect(
             self.set_auto_enabled
         )
-        
-        menu.addAction(self.enabled_action)
-        
-        self.tool_button.setMenu(menu)
-        
-        # Tilføj knappen til QGIS toolbar
+
+        self.main_menu.addAction(self.enabled_action)
+
+        self.print_menu_actions = []
+        self.main_menu.aboutToShow.connect(self.refresh_print_menu)
+
+        self.tool_button.setMenu(self.main_menu)
+
         self.action = self.iface.addToolBarWidget(
             self.tool_button
         )
 
     def open_settings(self):
-        # Åbn DMIKG Auto-siden i QGIS-indstillinger
         self.iface.showOptionsDialog(
             self.iface.mainWindow(),
             currentPage="DMIKG Auto"
@@ -114,19 +104,19 @@ class DmikgAuto:
 
     def set_auto_enabled(self, enabled):
         settings = QSettings()
-    
+
         settings.setValue(
             ENABLED_KEY,
             enabled
         )
-    
-    
+
+
         if self.enabled_action:
             self.enabled_action.blockSignals(True)
             self.enabled_action.setChecked(enabled)
             self.enabled_action.blockSignals(False)
 
-    
+
         if enabled:
             self.tool_button.setToolTip(
                 "DMIKG Auto"
@@ -136,76 +126,129 @@ class DmikgAuto:
                 "DMIKG Auto - automatisk styling deaktiveret"
             )
 
-    def sync_template(self):
-        template_source = get_template_source()
+    def sync_templates(self):
+        template_source_folder = get_template_folder()
 
-        # Stop hvis fællesdrevets skabelon ikke findes
-        if not os.path.exists(template_source):
+        if not os.path.isdir(template_source_folder):
             QgsMessageLog.logMessage(
-                f"Skabelon ikke fundet: {template_source}",
+                f"Skabelonmappe ikke fundet: {template_source_folder}",
                 "DMIKG Auto",
                 level=Qgis.Warning
             )
             return
 
-        # Find brugerens aktive QGIS-profil
         profile_path = QgsApplication.qgisSettingsDirPath()
-        
+
         if Qgis.QGIS_VERSION_INT >= 40000:
             profile_path = profile_path.replace(
                 "QGIS3",
                 "QGIS4"
             )
 
-        # Lokal mappe til projektskabeloner
-        template_folder = os.path.join(
+        local_template_folder = os.path.join(
             profile_path,
             "project_templates"
         )
 
         os.makedirs(
-            template_folder,
+            local_template_folder,
             exist_ok=True
         )
 
-        # Lokal projektskabelon
-        local_template = os.path.join(
-            template_folder,
-            "SKABELONV2.qgz"
-        )
+        for filename in os.listdir(template_source_folder):
 
-        # Kopier skabelonen hvis den mangler lokalt,
-        # eller hvis fællesversionen er nyere
-        should_copy = (
-            not os.path.exists(local_template)
-            or os.path.getmtime(template_source)
-            > os.path.getmtime(local_template)
-        )
+            if not filename.lower().endswith((".qgz", ".qgs")):
+                continue
 
-        if should_copy:
-            shutil.copy2(
-                template_source,
-                local_template
+            source_file = os.path.join(
+                template_source_folder,
+                filename
             )
 
-            QgsMessageLog.logMessage(
-                f"SKABELONV2 opdateret: {local_template}",
-                "DMIKG Auto",
-                level=Qgis.Info
+            local_file = os.path.join(
+                local_template_folder,
+                filename
             )
-        
+
+            should_copy = (
+                not os.path.exists(local_file)
+                or os.path.getmtime(source_file)
+                > os.path.getmtime(local_file)
+            )
+
+            if not should_copy:
+                continue
+
+            try:
+                shutil.copy2(
+                    source_file,
+                    local_file
+                )
+
+                QgsMessageLog.logMessage(
+                    f"Skabelon opdateret: {filename}",
+                    "DMIKG Auto",
+                    level=Qgis.Info
+                )
+
+            except Exception as exc:
+                QgsMessageLog.logMessage(
+                    f"Kunne ikke opdatere skabelon {filename}: {exc}",
+                    "DMIKG Auto",
+                    level=Qgis.Warning
+                )
+
+    def refresh_print_menu(self):
+        """Synkronisér og genopbyg print-delen i dropdown-menuen."""
+        self.print_manager.sync_layouts()
+
+        if not self.main_menu:
+            return
+
+        for action in self.print_menu_actions:
+            self.main_menu.removeAction(action)
+            action.deleteLater()
+
+        self.print_menu_actions = []
+
+        print_header = QAction("PRINT", self.main_menu)
+        print_header.setEnabled(False)
+        header_font = QFont(print_header.font())
+        header_font.setBold(True)
+        print_header.setFont(header_font)
+        self.main_menu.addAction(print_header)
+        self.print_menu_actions.append(print_header)
+
+        layouts = self.print_manager.discover_layouts()
+
+        if not layouts:
+            empty_action = QAction(
+                "    Ingen print-layouts fundet",
+                self.main_menu,
+            )
+            empty_action.setEnabled(False)
+            self.main_menu.addAction(empty_action)
+            self.print_menu_actions.append(empty_action)
+            return
+
+        for layout_name, template_path in layouts:
+            action = QAction(f"    {layout_name}", self.main_menu)
+            action.triggered.connect(
+                lambda checked=False, path=template_path:
+                    self.print_manager.create_layout_from_template(path)
+            )
+            self.main_menu.addAction(action)
+            self.print_menu_actions.append(action)
+
     def unload(self):
-        # Fjern signaler igen når pluginet unloades
         QgsProject.instance().layersAdded.disconnect(self.layers_added)
         QgsProject.instance().readProject.disconnect(self.project_loaded)
 
-        # Fjern indstillingssiden
         if self.options_factory:
             self.iface.unregisterOptionsWidgetFactory(
                 self.options_factory
             )
 
-        # Fjern toolbar-knappen
         if self.action:
             self.iface.removeToolBarIcon(self.action)
             self.action.deleteLater()
@@ -213,45 +256,39 @@ class DmikgAuto:
 
     def layers_added(self, layers):
         settings = QSettings()
-    
+
         enabled = settings.value(
             ENABLED_KEY,
             True,
             type=bool
         )
-    
-        # Stop helt hvis automatisk styling er deaktiveret
+
         if not enabled:
             return
-    
-        # Behandl alle nye lag der bliver tilføjet
+
         for layer in layers:
             self.process_layer(layer)
 
     def process_layer(self, layer):
-        # Nye lag får automatisk style
         self.apply_style(layer)
 
     def project_loaded(self, *args):
         project = QgsProject.instance()
 
-        # Find projektfilens navn uden .qgz
         project_path = project.fileName()
         project_name = os.path.splitext(
             os.path.basename(project_path)
         )[0]
 
-        # Kun SKABELONV2 må få eksisterende lag restylet
-        if project_name != "SKABELONV2":
+        if project_name.casefold() != "skabelon_main":
             return
 
         QgsMessageLog.logMessage(
-            "SKABELONV2 åbnet - opdaterer layer styles",
+            "SKABELON_MAIN åbnet - opdaterer layer styles",
             "DMIKG Auto",
             level=Qgis.Info
         )
 
-        # Gennemgå alle lag der allerede findes i skabelonen
         for layer in project.mapLayers().values():
             self.apply_style(layer)
 
@@ -259,7 +296,6 @@ class DmikgAuto:
         settings = QSettings()
         layer_name = layer.name()
 
-        # 1. Tjek om brugeren har lavet en lokal override
         custom_rules = settings.value(
             SETTINGS_KEY,
             [],
@@ -270,7 +306,6 @@ class DmikgAuto:
             if rule.get("layer", "") == layer_name:
                 custom_style_path = rule.get("style", "")
 
-                # Brug kun override hvis filen faktisk findes
                 if custom_style_path and os.path.exists(
                     custom_style_path
                 ):
@@ -303,50 +338,91 @@ class DmikgAuto:
 
                     return
 
-        # 2. Fælles filsti for særlige lag (efter eventuel lokal override).
-        shared_style_path = SHARED_STYLE_OVERRIDES.get(layer_name)
-        if shared_style_path:
-            if os.path.isfile(shared_style_path):
-                message, success = layer.loadNamedStyle(shared_style_path)
-                if success:
-                    layer.triggerRepaint()
-                    QgsMessageLog.logMessage(
-                        f"Fælles style anvendt på {layer_name}: {shared_style_path}",
-                        "DMIKG Auto", level=Qgis.Info,
-                    )
-                    return
-                QgsMessageLog.logMessage(
-                    f"Kunne ikke indlæse fælles style på {layer_name}: {message}. "
-                    "Forsøger standard-QML.",
-                    "DMIKG Auto", level=Qgis.Warning,
-                )
-            else:
-                QgsMessageLog.logMessage(
-                    f"Fælles style mangler for {layer_name}: {shared_style_path}. "
-                    "Forsøger standard-QML.",
-                    "DMIKG Auto", level=Qgis.Warning,
-                )
-
-        # 3. Hvis ingen override findes:
-        # prøv standard style fra fællesmappen
-        style_path = os.path.join(
+        standard_style_path = os.path.join(
             get_style_folder(),
             f"{layer_name}.qml"
         )
+        geojson_style_path = None
+        geojson_rule_key = None
 
-        # Ingen matchende QML = gør ingenting
-        if not os.path.exists(style_path):
+        source_path = layer.source().split("|")[0]
+
+        if source_path.casefold().endswith(".geojson"):
+            geojson_name = os.path.splitext(
+                os.path.basename(source_path)
+            )[0]
+
+            for suffix, geojson_rule in GEOJSON_SUFFIX_STYLES.items():
+                if geojson_name.casefold().endswith(suffix.casefold()):
+                    geojson_rule_key = suffix
+                    geojson_style_path = get_geojson_style_path(suffix)
+                    break
+
+        if geojson_rule_key:
+            for custom_rule in custom_rules:
+                if custom_rule.get("layer", "") != geojson_rule_key:
+                    continue
+
+                custom_geojson_path = custom_rule.get("style", "")
+                if custom_geojson_path and os.path.isfile(custom_geojson_path):
+                    message, success = layer.loadNamedStyle(custom_geojson_path)
+
+                    if success:
+                        layer.triggerRepaint()
+                        QgsMessageLog.logMessage(
+                            (
+                                f"GeoJSON brugerregel anvendt på {layer_name}: "
+                                f"{custom_geojson_path}"
+                            ),
+                            "DMIKG Auto",
+                            level=Qgis.Info
+                        )
+                    else:
+                        QgsMessageLog.logMessage(
+                            (
+                                f"Kunne ikke indlæse GeoJSON brugerregel på "
+                                f"{layer_name}: {message}"
+                            ),
+                            "DMIKG Auto",
+                            level=Qgis.Warning
+                        )
+
+                    return
+
+                break
+
+        style_candidates = []
+
+        if os.path.isfile(standard_style_path):
+            style_candidates.append(
+                standard_style_path
+            )
+
+        if geojson_style_path and os.path.isfile(
+            geojson_style_path
+        ):
+            style_candidates.append(
+                geojson_style_path
+            )
+
+        if not style_candidates:
             return
 
-        message, success = layer.loadNamedStyle(style_path)
+        style_path = max(
+            style_candidates,
+            key=os.path.getmtime
+        )
 
-        # 3. Opdater laget hvis style blev indlæst korrekt
+        message, success = layer.loadNamedStyle(
+            style_path
+        )
+
         if success:
             layer.triggerRepaint()
 
             QgsMessageLog.logMessage(
                 (
-                    f"Standard style anvendt på "
+                    f"Nyeste style anvendt på "
                     f"{layer_name}: {style_path}"
                 ),
                 "DMIKG Auto",

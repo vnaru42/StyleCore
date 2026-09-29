@@ -1,7 +1,7 @@
 [general]
 name=DMIKG_Auto
-description=Automatisk styling af lag i QGIS
-version=0.3.0
+description=Automatisk styling, projektskabeloner og fælles print-layouts i QGIS.
+version=1.0.0
 qgisMinimumVersion=3.44
 qgisMaximumVersion=4.99
 author=Angelo Jensen Dobbs - Praktikant - KDS

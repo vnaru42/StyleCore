@@ -33,9 +33,9 @@ from .config import (
     ENABLED_KEY,
     ROOT_FOLDER_KEY,
     SETTINGS_KEY,
-    SHARED_STYLE_OVERRIDES,
+    GEOJSON_SUFFIX_STYLES,
     get_root_folder,
-    get_style_folder,
+    get_geojson_style_path,
 )
 
 
@@ -53,16 +53,12 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         self.root_folder_changed_callback = root_folder_changed_callback
 
         layout = QVBoxLayout()
-
-        # ------------------------------------------------------------
-        # Fælles DMIKG-mappe
-        # ------------------------------------------------------------
-        folder_group = QGroupBox("DMIKG Fælles style mappe")
+        folder_group = QGroupBox("DMIKG fælles style")
         folder_layout = QVBoxLayout(folder_group)
 
         folder_info = QLabel(
-            "Sti til overordnet fælles style mappe (...\QGIS_komplet_stytem). "
-            
+            r"Sti til overordnet fælles style mappe (...\QGIS_komplet_stytem). "
+
         )
         folder_info.setWordWrap(True)
         folder_layout.addWidget(folder_info)
@@ -78,10 +74,6 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         folder_layout.addLayout(folder_row)
 
         layout.addWidget(folder_group)
-
-        # ------------------------------------------------------------
-        # Automatisk styling
-        # ------------------------------------------------------------
         title = QLabel("Automatiske layer styles")
         layout.addWidget(title)
 
@@ -124,10 +116,6 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         button_layout.addWidget(self.reset_button)
         button_layout.addStretch()
         layout.addLayout(button_layout)
-
-        # ------------------------------------------------------------
-        # Udviklertilstand
-        # ------------------------------------------------------------
         developer_group = QGroupBox("Udvikler")
         developer_layout = QVBoxLayout(developer_group)
 
@@ -200,13 +188,22 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         settings = QSettings()
         custom_rules = settings.value(SETTINGS_KEY, [], type=list)
         standard_styles = self.get_standard_styles()
-        standard_styles.update(SHARED_STYLE_OVERRIDES)
+
+        for suffix in GEOJSON_SUFFIX_STYLES:
+            standard_styles[suffix] = get_geojson_style_path(
+                suffix,
+                self.current_style_folder(),
+            )
 
         self.table.setRowCount(0)
 
         for layer_name, standard_path in sorted(standard_styles.items()):
             style_path = standard_path
-            status = "Fælles" if layer_name in SHARED_STYLE_OVERRIDES else "Standard"
+
+            if layer_name in GEOJSON_SUFFIX_STYLES:
+                status = "GeoJSON"
+            else:
+                status = "Standard"
 
             for rule in custom_rules:
                 if rule.get("layer", "") == layer_name:
@@ -237,7 +234,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
 
         status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
-        if status in ("Standard", "Tilpasset", "Fælles"):
+        if status in ("Standard", "Tilpasset", "GeoJSON"):
             layer_item.setFlags(layer_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
         self.table.setItem(row, 0, layer_item)
@@ -268,7 +265,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
 
         self.table.setItem(row, 1, QTableWidgetItem(file_path))
 
-        if current_status in ("Standard", "Tilpasset", "Fælles"):
+        if current_status in ("Standard", "Tilpasset", "GeoJSON"):
             status_item.setText("Tilpasset")
         else:
             status_item.setText("Brugerregel")
@@ -304,13 +301,23 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         if not layer_item or not status_item or status_item.text() != "Tilpasset":
             return
 
-        standard_path = os.path.join(
-            self.current_style_folder(),
-            f"{layer_item.text()}.qml",
-        )
+        layer_name = layer_item.text()
+
+        if layer_name in GEOJSON_SUFFIX_STYLES:
+            standard_path = get_geojson_style_path(
+                layer_name,
+                self.current_style_folder(),
+            )
+            reset_status = "GeoJSON"
+        else:
+            standard_path = os.path.join(
+                self.current_style_folder(),
+                f"{layer_name}.qml",
+            )
+            reset_status = "Standard"
 
         self.table.setItem(row, 1, QTableWidgetItem(standard_path))
-        status_item.setText("Standard")
+        status_item.setText(reset_status)
         self.update_buttons()
 
     def update_buttons(self):
@@ -414,7 +421,6 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         if not selected:
             return
 
-        # To lag med samme navn ville skrive til samme standardfil.
         names = [layer.name().casefold() for layer in selected]
         duplicates = sorted({layer.name() for layer in selected
                              if names.count(layer.name().casefold()) > 1})
@@ -439,65 +445,169 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
             )
             return
 
+        reply = QMessageBox.question(
+            self,
+            "Bekræft gemning af lagstyles",
+            (
+                f"Du er ved at gemme {len(selected)} valgte lagstyle(s) "
+                "til den fælles layer_styles-mappe.\n\n"
+                "Eksisterende standard-QML-filer vil blive overskrevet.\n\n"
+                "Vil du fortsætte?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+
         saved, failed, skipped = [], [], []
+        destination_keys = {}
+
         for layer in selected:
             name = layer.name()
-            # Undgå at et fejlagtigt navn kan føre til skrivning uden for fællesmappen.
-            if not name or name in (".", "..") or any(c in name for c in '<>:"/\\|?*'):
-                failed.append(f"{name}: Lagnavnet kan ikke bruges som filnavn.")
-                continue
-            standard_path = os.path.join(style_folder, f"{name}.qml")
-            external_path = SHARED_STYLE_OVERRIDES.get(name)
-            exists = os.path.isfile(standard_path)
 
-            if exists and external_path:
-                question = (
-                    "Du er ved at overskrive standard-QML-filen i den fælles "
-                    "template-mappe med lagets aktuelle style.\n\n"
-                    f"Standardfil, der overskrives:\n{standard_path}\n\n"
-                    f"Aktiv fælles override (style-kilde):\n{external_path}\n\n"
-                    "Den eksterne override-fil bliver ikke ændret. "
-                    "Er du sikker på, at du vil overskrive standardfilen?"
+            geojson_rule_key = None
+            source_path = layer.source().split("|")[0]
+
+            if source_path.casefold().endswith(".geojson"):
+                geojson_name = os.path.splitext(
+                    os.path.basename(source_path)
+                )[0]
+
+                for suffix, rule in GEOJSON_SUFFIX_STYLES.items():
+                    if geojson_name.casefold().endswith(suffix.casefold()):
+                        geojson_rule_key = suffix
+                        break
+
+            if geojson_rule_key:
+                standard_path = get_geojson_style_path(
+                    geojson_rule_key,
+                    style_folder,
                 )
-            elif exists:
-                question = (
-                    f"Overskriv standard-QML-filen?\n\n{standard_path}\n\n"
-                    "Den erstattes med lagets aktuelle style i QGIS."
-                )
+                display_name = f"{name} ({geojson_rule_key})"
             else:
-                question = None  # Nye QML-filer kan oprettes uden overskrivning.
-            if question is not None:
-                reply = QMessageBox.question(
-                    self, "Bekræft overskrivning af fælles style", question,
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                )
-                if reply != QMessageBox.StandardButton.Yes:
-                    skipped.append(name)
+                if (
+                    not name
+                    or name in (".", "..")
+                    or any(c in name for c in '<>:"/\\|?*')
+                ):
+                    failed.append(
+                        f"{name}: Lagnavnet kan ikke bruges som filnavn."
+                    )
                     continue
 
-            # Gem først til midlertidig fil i samme mappe. Flyt derefter på plads,
-            # så en fejl under saveNamedStyle ikke ødelægger den eksisterende QML.
+                standard_path = os.path.join(
+                    style_folder,
+                    f"{name}.qml"
+                )
+                display_name = name
+
+            if not standard_path:
+                failed.append(
+                    f"{display_name}: Ingen style-sti er angivet for reglen."
+                )
+                continue
+
+            destination_key = os.path.normcase(os.path.normpath(standard_path))
+            if destination_key in destination_keys:
+                failed.append(
+                    f"{display_name}: Samme QML-destination som "
+                    f"{destination_keys[destination_key]}. Vælg kun ét af dem."
+                )
+                continue
+            destination_keys[destination_key] = display_name
+
+            external_path = None
+            settings = QSettings()
+            custom_rules = settings.value(SETTINGS_KEY, [], type=list)
+
+            rule_name = geojson_rule_key or name
+            for custom_rule in custom_rules:
+                if custom_rule.get("layer", "") != rule_name:
+                    continue
+
+                custom_path = custom_rule.get("style", "").strip()
+                if custom_path:
+                    same_path = (
+                        os.path.normcase(os.path.normpath(custom_path))
+                        == os.path.normcase(os.path.normpath(standard_path))
+                    )
+                    if not same_path:
+                        external_path = custom_path
+                break
+
+            standard_exists = os.path.isfile(standard_path)
+            external_exists = bool(
+                external_path and os.path.isfile(external_path)
+            )
+
+            if standard_exists and external_exists:
+                question = (
+                    "Dette lag bruger en ekstern style-override.\n\n"
+                    "Du er ved at overskrive standard-QML-filen med "
+                    "lagets aktuelle style.\n\n"
+                    f"Standardfil:\n{standard_path}\n\n"
+                    f"Ekstern override:\n{external_path}\n\n"
+                    "Den eksterne override-fil bliver ikke ændret.\n\n"
+                    "Vil du fortsætte?"
+                )
+
+                reply = QMessageBox.question(
+                    self,
+                    "Bekræft overskrivning af standardstyle",
+                    question,
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+
+                if reply != QMessageBox.StandardButton.Yes:
+                    skipped.append(display_name)
+                    continue
+
+            target_folder = os.path.dirname(standard_path)
+            if not os.path.isdir(target_folder):
+                failed.append(
+                    f"{display_name}: Mappen findes ikke: {target_folder}"
+                )
+                continue
+
             temp_path = None
+
             try:
                 fd, temp_path = tempfile.mkstemp(
-                    prefix=".dmikg_style_", suffix=".qml", dir=style_folder
+                    prefix=".dmikg_style_",
+                    suffix=".qml",
+                    dir=target_folder
                 )
+
                 os.close(fd)
+
                 message, success = layer.saveNamedStyle(temp_path)
+
                 if not success:
                     raise RuntimeError(message)
-                if exists:
-                    shutil.copy2(standard_path, standard_path + ".bak")
+
+                if standard_exists:
+                    shutil.copy2(
+                        standard_path,
+                        standard_path + ".bak"
+                    )
+
                 os.replace(temp_path, standard_path)
                 temp_path = None
-                saved.append(name)
+                saved.append(display_name)
+
             except Exception as exc:
-                failed.append(f"{name}: {exc}")
+                failed.append(
+                    f"{display_name}: {exc}"
+                )
+
             finally:
                 if temp_path and os.path.exists(temp_path):
                     os.remove(temp_path)
-
         summary = [
             f"Gemte styles: {len(saved)}",
             f"Fravalgt ved bekræftelse: {len(skipped)}",
@@ -528,7 +638,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
             status = status_item.text()
             style_path = style_item.text().strip() if style_item else ""
 
-            if status in ("Standard", "Fælles"):
+            if status in ("Standard", "GeoJSON"):
                 continue
 
             if not layer_name or not style_path:

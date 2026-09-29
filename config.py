@@ -8,19 +8,27 @@ ENABLED_KEY = "DMIKG_AUTO/enabled"
 ROOT_FOLDER_KEY = "DMIKG_AUTO/root_folder"
 DEVELOPER_MODE_KEY = "DMIKG_AUTO/developer_mode"
 
-DEFAULT_ROOT_FOLDER = r"F:\GDL\Software\QGIS_komplet_stytem"
+DEFAULT_ROOT_FOLDER = r"\\prod.sitad.dk\dfs\CU2314\F-DREV\GDL\Software\QGIS_komplet_stytem"
 
-# Dette er kun en ekstra bekræftelse mod utilsigtet overskrivning.
-# Det er ikke tænkt som egentlig adgangssikring.
 DEVELOPER_CODE = "DMIKG"
 
-# Fælles undtagelser: samme filsti bruges af alle medarbejdere.
-# Lokale brugerregler kan fortsat overstyre disse.
-SHARED_STYLE_OVERRIDES = {
-    "V_ALLE_NIV_OBS": (
-        r"F:\GDL\Data\GEO\BC\Niv_Opgaver\QGIS_Skabelon"
-        r"\ALLE_NIV_OBS_opmålingsår.qml"
-    ),
+GEOJSON_SUFFIX_STYLES = {
+    "-kon-observationer": {
+        "name": "-kon-observationer.geojson",
+        "style_filename": "kon_observationer.qml",
+    },
+    "-kon-punkter": {
+        "name": "-kon-punkter.geojson",
+        "style_filename": "kon_punkter.qml",
+    },
+    "-observationer": {
+        "name": "-observationer.geojson",
+        "style_filename": "observationer.qml",
+    },
+    "-punkter": {
+        "name": "-punkter.geojson",
+        "style_filename": "punkter.qml",
+    },
 }
 
 
@@ -36,9 +44,19 @@ def get_style_folder():
     return os.path.join(get_root_folder(), "layer_styles")
 
 
-def get_template_source():
-    return os.path.join(
-        get_root_folder(),
-        "TEMPLATE_PROJECT",
-        "SKABELONV2.qgz",
-    )
+def get_template_folder():
+    return os.path.join(get_root_folder(), "template_projects")
+
+
+def get_layout_folder():
+    return os.path.join(get_root_folder(), "layouts")
+
+
+def get_geojson_style_path(suffix, style_folder=None):
+    """Returnér standard-QML-stien for en GeoJSON suffix-regel."""
+    rule = GEOJSON_SUFFIX_STYLES.get(suffix, {})
+    filename = rule.get("style_filename", "")
+    if not filename:
+        return ""
+
+    return os.path.join(style_folder or get_style_folder(), filename)
