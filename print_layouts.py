@@ -1,8 +1,5 @@
 import os
-import shutil
-
 from qgis.core import (
-    QgsApplication,
     QgsLayoutItemMap,
     QgsLayoutItemPicture,
     QgsMessageLog,
@@ -21,76 +18,17 @@ from .config import get_layout_folder
 
 
 class StyleCorePrintLayouts:
-    """Synchronize, discover, and open shared QPT print layouts."""
+    """Discover and open shared QPT print layouts."""
 
     def __init__(self, iface):
         self.iface = iface
 
 
-    def local_layout_folder(self):
-        """Return the user's local folder for synchronized .qpt files."""
-        profile_path = QgsApplication.qgisSettingsDirPath()
-
-        if Qgis.QGIS_VERSION_INT >= 40000:
-            profile_path = profile_path.replace("QGIS3", "QGIS4")
-
-        return os.path.join(
-            profile_path,
-            "stylecore",
-            "layouts",
-        )
-
-    def sync_layouts(self):
-        """Copy newer shared .qpt files to the local QGIS profile."""
-        source_folder = get_layout_folder()
-        local_folder = self.local_layout_folder()
-
-        if not source_folder:
-            return
-
-        if not os.path.isdir(source_folder):
-            QgsMessageLog.logMessage(
-                f"Print-layoutmappe ikke fundet: {source_folder}",
-                "StyleCore",
-                level=Qgis.Warning,
-            )
-            return
-
-        os.makedirs(local_folder, exist_ok=True)
-
-        for filename in os.listdir(source_folder):
-            if not filename.lower().endswith(".qpt"):
-                continue
-
-            source_file = os.path.join(source_folder, filename)
-            local_file = os.path.join(local_folder, filename)
-
-            should_copy = (
-                not os.path.exists(local_file)
-                or os.path.getmtime(source_file) > os.path.getmtime(local_file)
-            )
-
-            if not should_copy:
-                continue
-
-            try:
-                shutil.copy2(source_file, local_file)
-                QgsMessageLog.logMessage(
-                    f"Print-layout opdateret: {filename}",
-                    "StyleCore",
-                    level=Qgis.Info,
-                )
-            except Exception as exc:
-                QgsMessageLog.logMessage(
-                    f"Kunne ikke synkronisere print-layout {filename}: {exc}",
-                    "StyleCore",
-                    level=Qgis.Warning,
-                )
-
     def discover_layouts(self):
-        """Find alle synkroniserede layouts dynamisk."""
-        folder = self.local_layout_folder()
-        if not os.path.isdir(folder):
+        """Discover shared QPT layouts directly from the configured folder."""
+        folder = get_layout_folder()
+
+        if not folder or not os.path.isdir(folder):
             return []
 
         layouts = []

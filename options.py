@@ -19,6 +19,8 @@ from qgis.PyQt.QtWidgets import (
     QLabel,
     QLineEdit,
     QSizePolicy,
+    QScrollArea,
+    QWidget,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -64,7 +66,15 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         self.enabled_changed_callback = enabled_changed_callback
         self.root_folder_changed_callback = root_folder_changed_callback
 
-        layout = QVBoxLayout()
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
 
         config_group = QGroupBox(tr("Konfiguration"))
         config_layout = QVBoxLayout(config_group)
@@ -116,7 +126,7 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
 
         self.restyle_template_list = QListWidget()
         self.restyle_template_list.setAlternatingRowColors(True)
-        self.restyle_template_list.setMaximumHeight(150)
+        self.restyle_template_list.setMaximumHeight(110)
         template_layout.addWidget(self.restyle_template_list)
         layout.addWidget(template_group)
 
@@ -162,6 +172,7 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         button_layout.addWidget(self.reset_button)
         button_layout.addStretch()
         layout.addLayout(button_layout)
+
         developer_group = QGroupBox(tr("Udvikler"))
         developer_layout = QVBoxLayout(developer_group)
 
@@ -188,7 +199,8 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
 
         layout.addWidget(developer_group)
 
-        self.setLayout(layout)
+        scroll_area.setWidget(content_widget)
+        outer_layout.addWidget(scroll_area)
 
         self.refresh_configuration_ui()
         self.load_settings()
@@ -329,11 +341,7 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
                 "layouts": layouts_edit.text().strip() or "layouts",
             },
             "geojson_suffix_styles": {},
-            "restyle_on_open": [
-                "template_main",
-                "template_placeholder_2",
-                "template_placeholder_3",
-            ],
+            "restyle_on_open": [],
         }
 
         try:

@@ -3,8 +3,8 @@ import shutil
 
 from qgis.core import QgsProject, QgsMessageLog, QgsApplication, Qgis
 from qgis.PyQt.QtGui import QFont, QIcon
-from qgis.PyQt.QtWidgets import QAction, QToolButton, QMenu
-from qgis.PyQt.QtCore import QSettings
+from qgis.PyQt.QtWidgets import QAction, QToolButton, QMenu, QListView
+from qgis.PyQt.QtCore import QSettings, QTimer, Qt
 
 from .options import StyleCoreOptionsFactory
 from .print_layouts import StyleCorePrintLayouts
@@ -32,8 +32,13 @@ class StyleCore:
 
     def initGui(self):
         self.register_fonts()
-        self.sync_templates()
-        self.print_manager.sync_layouts()
+        self.migrate_legacy_template_path()
+
+        # Defer the first resource sync until QGIS has finished building its GUI.
+        # This avoids project templates being discovered twice during startup and
+        # also makes resources available after a first-time plugin installation
+        # without requiring a QGIS restart.
+        QTimer.singleShot(250, self.sync_resources)
 
         QgsProject.instance().layersAdded.connect(self.layers_added)
 
@@ -99,6 +104,40 @@ class StyleCore:
             self.tool_button
         )
 
+
+    def migrate_legacy_template_path(self):
+        """Undo the temporary StyleCore template-path experiment from pre-1.5.1 tests."""
+        settings = QSettings()
+        configured = settings.value("qgis/projectTemplateDir", "", type=str) or ""
+
+        if not configured:
+            return
+
+        normalized = os.path.normpath(configured)
+        if os.path.basename(normalized).casefold() != "stylecore_project_templates":
+            return
+
+        profile_path = QgsApplication.qgisSettingsDirPath()
+        default_template_folder = os.path.normpath(
+            os.path.join(profile_path, "project_templates")
+        )
+
+        settings.setValue("qgis/projectTemplateDir", default_template_folder)
+        settings.sync()
+
+        # Remove only the obsolete empty folder created by the old test build.
+        try:
+            if os.path.isdir(normalized) and not os.listdir(normalized):
+                os.rmdir(normalized)
+        except OSError:
+            pass
+
+        QgsMessageLog.logMessage(
+            f"Restored QGIS project template directory: {default_template_folder}",
+            "StyleCore",
+            level=Qgis.Info
+        )
+
     def register_fonts(self):
         """Register fonts bundled with StyleCore in the current QGIS session."""
         font_dir = os.path.join(
@@ -161,9 +200,86 @@ class StyleCore:
             )
 
     def sync_resources(self):
-        """Synchronize all resources after the configuration or root changes."""
+        """Synchronize resources that require local QGIS copies."""
         self.sync_templates()
-        self.print_manager.sync_layouts()
+
+        # QGIS' Welcome page maintains its own live template model. On some
+        # installations the same physical template can temporarily be inserted
+        # more than once when the watched project_templates directory changes.
+        # Clean only duplicate rows belonging to templates managed by StyleCore.
+        QTimer.singleShot(300, self.cleanup_welcome_template_duplicates)
+        QTimer.singleShot(1200, self.cleanup_welcome_template_duplicates)
+
+    def cleanup_welcome_template_duplicates(self):
+        """Remove duplicate StyleCore template rows from QGIS' Welcome model."""
+        template_source_folder = get_template_folder()
+        if not template_source_folder or not os.path.isdir(template_source_folder):
+            return
+
+        managed_names = {
+            os.path.splitext(filename)[0].casefold()
+            for filename in os.listdir(template_source_folder)
+            if filename.lower().endswith((".qgz", ".qgs"))
+        }
+
+        if not managed_names:
+            return
+
+        main_window = self.iface.mainWindow()
+
+        for view in main_window.findChildren(QListView):
+            model = view.model()
+            if model is None:
+                continue
+
+            try:
+                class_name = model.metaObject().className()
+            except Exception:
+                continue
+
+            if "TemplateProjectsModel" not in class_name:
+                continue
+
+            seen = set()
+            duplicate_rows = []
+
+            for row in range(model.rowCount()):
+                index = model.index(row, 0)
+
+                # The delegate title is stored in a custom role, while the
+                # QStandardItem display value normally contains the filename.
+                # Read a small range of roles so this remains tolerant across
+                # supported QGIS versions.
+                values = []
+                for role in range(int(Qt.ItemDataRole.DisplayRole), int(Qt.ItemDataRole.UserRole) + 32):
+                    value = index.data(role)
+                    if value is not None and value != "":
+                        values.append(str(value))
+
+                managed_name = None
+                for value in values:
+                    base = os.path.splitext(os.path.basename(value))[0].casefold()
+                    if base in managed_names:
+                        managed_name = base
+                        break
+
+                if managed_name is None:
+                    continue
+
+                if managed_name in seen:
+                    duplicate_rows.append(row)
+                else:
+                    seen.add(managed_name)
+
+            for row in reversed(duplicate_rows):
+                model.removeRow(row)
+
+            if duplicate_rows:
+                QgsMessageLog.logMessage(
+                    f"Removed {len(duplicate_rows)} duplicate Welcome template entrie(s).",
+                    "StyleCore",
+                    level=Qgis.Info
+                )
 
     def sync_templates(self):
         template_source_folder = get_template_folder()
@@ -179,13 +295,11 @@ class StyleCore:
             )
             return
 
+        # qgisSettingsDirPath() already points to the root of the currently
+        # active QGIS profile. Do not rewrite QGIS3/QGIS4 path components:
+        # custom, migrated or side-by-side profiles may legitimately use
+        # either location.
         profile_path = QgsApplication.qgisSettingsDirPath()
-
-        if Qgis.QGIS_VERSION_INT >= 40000:
-            profile_path = profile_path.replace(
-                "QGIS3",
-                "QGIS4"
-            )
 
         local_template_folder = os.path.join(
             profile_path,
@@ -241,8 +355,7 @@ class StyleCore:
                 )
 
     def refresh_print_menu(self):
-        """Synchronize and rebuild the print section of the dropdown menu."""
-        self.print_manager.sync_layouts()
+        """Rebuild the print section directly from the configured layout folder."""
 
         if not self.main_menu:
             return

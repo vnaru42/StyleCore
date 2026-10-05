@@ -1,7 +1,7 @@
 [general]
 name=StyleCore
 description=Central management of styles, project templates, print layouts and shared configurations in QGIS.
-version=1.5.0
+version=1.5.1
 qgisMinimumVersion=3.44
 qgisMaximumVersion=4.99
 author=Angelo Jensen Dobbs

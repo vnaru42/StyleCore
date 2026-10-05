@@ -232,4 +232,4 @@ configuration and resource folder.
 
 ## Version
 
-1.5.0
+1.5.1
