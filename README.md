@@ -19,6 +19,8 @@ After installation, StyleCore is available from the QGIS plugin interface and un
 
 StyleCore uses a JSON configuration file to define where styles, project templates, and print layouts are stored.
 
+For use in shared environment and organizations, its best distributed with predefined configuration file for ease of use.
+
 Under **Settings > Options > StyleCore**, you can:
 
 - **Load configuration...** – Select an existing StyleCore JSON configuration.
