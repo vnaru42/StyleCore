@@ -1,12 +1,12 @@
 [general]
-name=DMIKG_Auto
-description=Automatisk styling, projektskabeloner og fælles print-layouts i QGIS.
-version=1.0.0
+name=StyleCore
+description=Central management of styles, project templates, print layouts and shared configurations in QGIS.
+version=1.5.0
 qgisMinimumVersion=3.44
 qgisMaximumVersion=4.99
-author=Angelo Jensen Dobbs - Praktikant - KDS
-icon=kds_logo.png
+author=Angelo Jensen Dobbs
+icon=stylecore_icon.png
 experimental=True
-homepage=https://github.com/vnaru42/dmikg_auto
-repository=https://github.com/vnaru42/dmikg_auto
-tracker=https://github.com/vnaru42/dmikg_auto/issues
+homepage=https://github.com/vnaru42/StyleCore
+repository=https://github.com/vnaru42/StyleCore
+tracker=https://github.com/vnaru42/StyleCore/issues

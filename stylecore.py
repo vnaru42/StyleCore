@@ -6,18 +6,20 @@ from qgis.PyQt.QtGui import QFont, QIcon
 from qgis.PyQt.QtWidgets import QAction, QToolButton, QMenu
 from qgis.PyQt.QtCore import QSettings
 
-from .options import DmikgAutoOptionsFactory
-from .print_layouts import DmikgPrintLayouts
+from .options import StyleCoreOptionsFactory
+from .print_layouts import StyleCorePrintLayouts
+from .language import tr
 from .config import (
     ENABLED_KEY,
     SETTINGS_KEY,
-    GEOJSON_SUFFIX_STYLES,
+    get_geojson_suffix_styles,
     get_style_folder,
     get_template_folder,
     get_geojson_style_path,
+    get_restyle_templates,
 )
 
-class DmikgAuto:
+class StyleCore:
 
     def __init__(self, iface):
         self.iface = iface
@@ -25,10 +27,11 @@ class DmikgAuto:
         self.action = None
         self.tool_button = None
         self.enabled_action = None
-        self.print_manager = DmikgPrintLayouts(iface)
+        self.print_manager = StyleCorePrintLayouts(iface)
         self.main_menu = None
 
     def initGui(self):
+        self.register_fonts()
         self.sync_templates()
         self.print_manager.sync_layouts()
 
@@ -36,19 +39,19 @@ class DmikgAuto:
 
         QgsProject.instance().readProject.connect(self.project_loaded)
 
-        self.options_factory = DmikgAutoOptionsFactory(
+        self.options_factory = StyleCoreOptionsFactory(
             enabled_changed_callback=self.set_auto_enabled,
-            root_folder_changed_callback=self.sync_templates,
+            root_folder_changed_callback=self.sync_resources,
         )
 
         self.iface.registerOptionsWidgetFactory(self.options_factory)
 
         plugin_dir = os.path.dirname(__file__)
-        icon_path = os.path.join(plugin_dir, "kds_logo.png")
+        icon_path = os.path.join(plugin_dir, "stylecore_icon.png")
 
         self.tool_button = QToolButton()
         self.tool_button.setIcon(QIcon(icon_path))
-        self.tool_button.setToolTip("DMIKG Auto")
+        self.tool_button.setToolTip("StyleCore")
 
         self.tool_button.setPopupMode(
             QToolButton.ToolButtonPopupMode.InstantPopup
@@ -56,7 +59,7 @@ class DmikgAuto:
         self.main_menu = QMenu(self.tool_button)
 
         settings_action = QAction(
-            "Indstillinger...",
+            tr("Indstillinger..."),
             self.main_menu
         )
 
@@ -67,7 +70,7 @@ class DmikgAuto:
         self.main_menu.addAction(settings_action)
 
         self.enabled_action = QAction(
-            "Automatisk styling",
+            tr("Automatisk styling"),
             self.main_menu
         )
 
@@ -96,10 +99,41 @@ class DmikgAuto:
             self.tool_button
         )
 
+    def register_fonts(self):
+        """Register fonts bundled with StyleCore in the current QGIS session."""
+        font_dir = os.path.join(
+            os.path.dirname(__file__),
+            "fonts"
+        )
+
+        if not os.path.isdir(font_dir):
+            QgsMessageLog.logMessage(
+                f"Font folder not found: {font_dir}",
+                "StyleCore",
+                level=Qgis.Warning
+            )
+            return
+
+        try:
+            QgsApplication.fontManager().addUserFontDirectory(font_dir)
+
+            QgsMessageLog.logMessage(
+                f"StyleCore fonts registered: {font_dir}",
+                "StyleCore",
+                level=Qgis.Info
+            )
+
+        except Exception as exc:
+            QgsMessageLog.logMessage(
+                f"Could not register StyleCore fonts: {exc}",
+                "StyleCore",
+                level=Qgis.Warning
+            )
+
     def open_settings(self):
         self.iface.showOptionsDialog(
             self.iface.mainWindow(),
-            currentPage="DMIKG Auto"
+            currentPage="StyleCore"
         )
 
     def set_auto_enabled(self, enabled):
@@ -119,20 +153,28 @@ class DmikgAuto:
 
         if enabled:
             self.tool_button.setToolTip(
-                "DMIKG Auto"
+                "StyleCore"
             )
         else:
             self.tool_button.setToolTip(
-                "DMIKG Auto - automatisk styling deaktiveret"
+                tr("StyleCore - automatisk styling deaktiveret")
             )
+
+    def sync_resources(self):
+        """Synchronize all resources after the configuration or root changes."""
+        self.sync_templates()
+        self.print_manager.sync_layouts()
 
     def sync_templates(self):
         template_source_folder = get_template_folder()
 
+        if not template_source_folder:
+            return
+
         if not os.path.isdir(template_source_folder):
             QgsMessageLog.logMessage(
-                f"Skabelonmappe ikke fundet: {template_source_folder}",
-                "DMIKG Auto",
+                f"Template folder not found: {template_source_folder}",
+                "StyleCore",
                 level=Qgis.Warning
             )
             return
@@ -187,19 +229,19 @@ class DmikgAuto:
 
                 QgsMessageLog.logMessage(
                     f"Skabelon opdateret: {filename}",
-                    "DMIKG Auto",
+                    "StyleCore",
                     level=Qgis.Info
                 )
 
             except Exception as exc:
                 QgsMessageLog.logMessage(
-                    f"Kunne ikke opdatere skabelon {filename}: {exc}",
-                    "DMIKG Auto",
+                    f"Could not update template {filename}: {exc}",
+                    "StyleCore",
                     level=Qgis.Warning
                 )
 
     def refresh_print_menu(self):
-        """Synkronisér og genopbyg print-delen i dropdown-menuen."""
+        """Synchronize and rebuild the print section of the dropdown menu."""
         self.print_manager.sync_layouts()
 
         if not self.main_menu:
@@ -223,7 +265,7 @@ class DmikgAuto:
 
         if not layouts:
             empty_action = QAction(
-                "    Ingen print-layouts fundet",
+                "    " + tr("Ingen print-layouts fundet"),
                 self.main_menu,
             )
             empty_action.setEnabled(False)
@@ -280,12 +322,16 @@ class DmikgAuto:
             os.path.basename(project_path)
         )[0]
 
-        if project_name.casefold() != "skabelon_main":
+        restyle_templates = {
+            name.casefold() for name in get_restyle_templates()
+        }
+
+        if project_name.casefold() not in restyle_templates:
             return
 
         QgsMessageLog.logMessage(
-            "SKABELON_MAIN åbnet - opdaterer layer styles",
-            "DMIKG Auto",
+            f"Template '{project_name}' opened - refreshing layer styles",
+            "StyleCore",
             level=Qgis.Info
         )
 
@@ -318,21 +364,21 @@ class DmikgAuto:
 
                         QgsMessageLog.logMessage(
                             (
-                                f"Brugerregel anvendt på "
+                                f"User rule applied to "
                                 f"{layer_name}: "
                                 f"{custom_style_path}"
                             ),
-                            "DMIKG Auto",
+                            "StyleCore",
                             level=Qgis.Info
                         )
 
                     else:
                         QgsMessageLog.logMessage(
                             (
-                                f"Kunne ikke indlæse brugerregel "
-                                f"på {layer_name}: {message}"
+                                f"Could not load user rule "
+                                f"for {layer_name}: {message}"
                             ),
-                            "DMIKG Auto",
+                            "StyleCore",
                             level=Qgis.Warning
                         )
 
@@ -352,7 +398,7 @@ class DmikgAuto:
                 os.path.basename(source_path)
             )[0]
 
-            for suffix, geojson_rule in GEOJSON_SUFFIX_STYLES.items():
+            for suffix, geojson_rule in get_geojson_suffix_styles().items():
                 if geojson_name.casefold().endswith(suffix.casefold()):
                     geojson_rule_key = suffix
                     geojson_style_path = get_geojson_style_path(suffix)
@@ -371,19 +417,19 @@ class DmikgAuto:
                         layer.triggerRepaint()
                         QgsMessageLog.logMessage(
                             (
-                                f"GeoJSON brugerregel anvendt på {layer_name}: "
+                                f"GeoJSON user rule applied to {layer_name}: "
                                 f"{custom_geojson_path}"
                             ),
-                            "DMIKG Auto",
+                            "StyleCore",
                             level=Qgis.Info
                         )
                     else:
                         QgsMessageLog.logMessage(
                             (
-                                f"Kunne ikke indlæse GeoJSON brugerregel på "
+                                f"Could not load GeoJSON user rule for "
                                 f"{layer_name}: {message}"
                             ),
-                            "DMIKG Auto",
+                            "StyleCore",
                             level=Qgis.Warning
                         )
 
@@ -422,19 +468,19 @@ class DmikgAuto:
 
             QgsMessageLog.logMessage(
                 (
-                    f"Nyeste style anvendt på "
+                    f"Newest style applied to "
                     f"{layer_name}: {style_path}"
                 ),
-                "DMIKG Auto",
+                "StyleCore",
                 level=Qgis.Info
             )
 
         else:
             QgsMessageLog.logMessage(
                 (
-                    f"Kunne ikke indlæse style "
-                    f"på {layer_name}: {message}"
+                    f"Could not load style "
+                    f"for {layer_name}: {message}"
                 ),
-                "DMIKG Auto",
+                "StyleCore",
                 level=Qgis.Warning
             )

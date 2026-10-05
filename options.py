@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import tempfile
@@ -10,6 +11,7 @@ from qgis.PyQt.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QGroupBox,
     QHeaderView,
     QHBoxLayout,
@@ -27,19 +29,29 @@ from qgis.PyQt.QtWidgets import (
 )
 from qgis.gui import QgsOptionsPageWidget, QgsOptionsWidgetFactory
 
+from .language import tr
+
 from .config import (
-    DEVELOPER_CODE,
+    CONFIG_FILE_KEY,
     DEVELOPER_MODE_KEY,
     ENABLED_KEY,
     ROOT_FOLDER_KEY,
     SETTINGS_KEY,
-    GEOJSON_SUFFIX_STYLES,
+    get_geojson_suffix_styles,
     get_root_folder,
+    get_config_file,
+    get_bundled_config_file,
+    load_external_config,
+    get_configuration_name,
+    get_developer_code,
+    get_folder_name,
     get_geojson_style_path,
+    get_restyle_templates,
+    save_restyle_templates,
 )
 
 
-class DmikgAutoOptionsPage(QgsOptionsPageWidget):
+class StyleCoreOptionsPage(QgsOptionsPageWidget):
 
     def __init__(
         self,
@@ -53,11 +65,29 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         self.root_folder_changed_callback = root_folder_changed_callback
 
         layout = QVBoxLayout()
-        folder_group = QGroupBox("DMIKG fælles style")
+
+        config_group = QGroupBox(tr("Konfiguration"))
+        config_layout = QVBoxLayout(config_group)
+        self.config_status = QLabel()
+        self.config_status.setWordWrap(True)
+        config_layout.addWidget(self.config_status)
+
+        config_buttons = QHBoxLayout()
+        self.load_config_button = QPushButton(tr("Indlæs konfiguration..."))
+        self.new_config_button = QPushButton(tr("Ny konfiguration..."))
+        self.load_config_button.clicked.connect(self.choose_configuration_file)
+        self.new_config_button.clicked.connect(self.create_configuration_file)
+        config_buttons.addWidget(self.load_config_button)
+        config_buttons.addWidget(self.new_config_button)
+        config_buttons.addStretch()
+        config_layout.addLayout(config_buttons)
+        layout.addWidget(config_group)
+
+        folder_group = QGroupBox(tr("StyleCore ressourcer"))
         folder_layout = QVBoxLayout(folder_group)
 
         folder_info = QLabel(
-            r"Sti til overordnet fælles style mappe (...\QGIS_komplet_stytem). "
+            tr("Rodmappe til StyleCore-ressourcer. Placeringen kommer normalt fra den aktive konfiguration.")
 
         )
         folder_info.setWordWrap(True)
@@ -74,10 +104,26 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         folder_layout.addLayout(folder_row)
 
         layout.addWidget(folder_group)
-        title = QLabel("Automatiske layer styles")
+
+        template_group = QGroupBox(tr("Template-opdatering"))
+        template_layout = QVBoxLayout(template_group)
+        template_info = QLabel(tr(
+            "Vælg hvilke projektskabeloner der skal have eksisterende lag "
+            "kontrolleret og restylet, når skabelonen åbnes."
+        ))
+        template_info.setWordWrap(True)
+        template_layout.addWidget(template_info)
+
+        self.restyle_template_list = QListWidget()
+        self.restyle_template_list.setAlternatingRowColors(True)
+        self.restyle_template_list.setMaximumHeight(150)
+        template_layout.addWidget(self.restyle_template_list)
+        layout.addWidget(template_group)
+
+        title = QLabel(tr("Automatiske layer styles"))
         layout.addWidget(title)
 
-        self.enabled_checkbox = QCheckBox("Automatisk styling aktiveret")
+        self.enabled_checkbox = QCheckBox(tr("Automatisk styling aktiveret"))
         enabled = QSettings().value(ENABLED_KEY, True, type=bool)
         self.enabled_checkbox.setChecked(enabled)
         layout.addWidget(self.enabled_checkbox)
@@ -86,9 +132,9 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels([
-            "Lagnavn",
-            "Style-sti",
-            "Status",
+            tr("Lagnavn"),
+            tr("Style-sti"),
+            tr("Status"),
         ])
 
         header = self.table.horizontalHeader()
@@ -103,9 +149,9 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         layout.addWidget(self.table, 1)
 
         button_layout = QHBoxLayout()
-        self.add_button = QPushButton("Tilføj")
-        self.remove_button = QPushButton("Fjern")
-        self.reset_button = QPushButton("Nulstil valgt")
+        self.add_button = QPushButton(tr("Tilføj"))
+        self.remove_button = QPushButton(tr("Fjern"))
+        self.reset_button = QPushButton(tr("Nulstil valgt"))
 
         self.add_button.clicked.connect(self.add_row)
         self.remove_button.clicked.connect(self.remove_row)
@@ -116,10 +162,10 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         button_layout.addWidget(self.reset_button)
         button_layout.addStretch()
         layout.addLayout(button_layout)
-        developer_group = QGroupBox("Udvikler")
+        developer_group = QGroupBox(tr("Udvikler"))
         developer_layout = QVBoxLayout(developer_group)
 
-        self.developer_checkbox = QCheckBox("Aktivér udviklertilstand")
+        self.developer_checkbox = QCheckBox(tr("Aktivér udviklertilstand"))
         developer_enabled = QSettings().value(
             DEVELOPER_MODE_KEY,
             False,
@@ -129,14 +175,14 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         self.developer_checkbox.toggled.connect(self.update_developer_ui)
         developer_layout.addWidget(self.developer_checkbox)
 
-        self.developer_info = QLabel(
+        self.developer_info = QLabel(tr(
             "Gemmer de aktuelle styles fra projektets lag tilbage til de "
             "tilsvarende QML-filer i den fælles layer_styles-mappe."
-        )
+        ))
         self.developer_info.setWordWrap(True)
         developer_layout.addWidget(self.developer_info)
 
-        self.save_all_styles_button = QPushButton("Gem lagstyles...")
+        self.save_all_styles_button = QPushButton(tr("Gem lagstyles..."))
         self.save_all_styles_button.clicked.connect(self.save_selected_styles)
         developer_layout.addWidget(self.save_all_styles_button)
 
@@ -144,6 +190,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
 
         self.setLayout(layout)
 
+        self.refresh_configuration_ui()
         self.load_settings()
         self.update_buttons()
         self.update_developer_ui()
@@ -152,13 +199,161 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         return self.root_folder_edit.text().strip()
 
     def current_style_folder(self):
-        return os.path.join(self.current_root_folder(), "layer_styles")
+        root = self.current_root_folder()
+        return os.path.join(root, get_folder_name("styles")) if root else ""
+
+    def refresh_configuration_ui(self):
+        path = get_config_file()
+
+        if path:
+            self.config_status.setText(
+                tr(f"Aktiv konfiguration: {get_configuration_name()}\n{path}")
+            )
+        else:
+            self.config_status.setText(
+                tr("Ingen konfiguration er indlæst. Opret en ny eller indlæs en eksisterende konfiguration.")
+            )
+
+    def activate_configuration(self, path, config):
+        settings = QSettings()
+        settings.setValue(CONFIG_FILE_KEY, path)
+        settings.remove(ROOT_FOLDER_KEY)
+
+        root = str(config.get("root_folder", "")).strip()
+        self.root_folder_edit.setText(root)
+        self.refresh_configuration_ui()
+        self.load_settings()
+
+        if self.root_folder_changed_callback:
+            self.root_folder_changed_callback()
+
+    def choose_configuration_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            tr("Indlæs StyleCore-konfiguration"),
+            os.path.dirname(get_config_file()) if get_config_file() else "",
+            "StyleCore configuration (*.json);;JSON (*.json)",
+        )
+        if not path:
+            return
+
+        config = load_external_config(path)
+        if not config:
+            QMessageBox.warning(
+                self,
+                tr("Ugyldig konfiguration"),
+                tr("Filen kunne ikke læses som en gyldig StyleCore-konfiguration."),
+            )
+            return
+
+        self.activate_configuration(path, config)
+
+    def create_configuration_file(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr("Ny StyleCore-konfiguration"))
+        dialog.resize(560, 260)
+        layout = QVBoxLayout(dialog)
+
+        form = QFormLayout()
+        name_edit = QLineEdit(tr("Min StyleCore-konfiguration"))
+        root_edit = QLineEdit(self.current_root_folder())
+        styles_edit = QLineEdit("layer_styles")
+        templates_edit = QLineEdit("template_projects")
+        layouts_edit = QLineEdit("layouts")
+
+        root_row = QHBoxLayout()
+        root_row.addWidget(root_edit)
+        browse_button = QPushButton("...")
+        browse_button.setFixedWidth(38)
+        root_row.addWidget(browse_button)
+
+        def browse_root():
+            folder = QFileDialog.getExistingDirectory(
+                dialog,
+                tr("Vælg StyleCore-rodmappe"),
+                root_edit.text().strip(),
+            )
+            if folder:
+                root_edit.setText(folder)
+
+        browse_button.clicked.connect(browse_root)
+
+        form.addRow(tr("Navn:"), name_edit)
+        form.addRow(tr("Rodmappe:"), root_row)
+        form.addRow(tr("Styles-mappe:"), styles_edit)
+        form.addRow(tr("Templates-mappe:"), templates_edit)
+        form.addRow(tr("Layouts-mappe:"), layouts_edit)
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save |
+            QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText(tr("Gem konfiguration"))
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        root = root_edit.text().strip()
+        if not root:
+            QMessageBox.warning(
+                self,
+                tr("Rodmappe mangler"),
+                tr("Vælg en rodmappe til StyleCore-ressourcerne."),
+            )
+            return
+
+        default_dir = os.path.dirname(get_config_file()) if get_config_file() else os.path.expanduser("~")
+        default_name = "stylecore_config.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            tr("Gem StyleCore-konfiguration"),
+            os.path.join(default_dir, default_name),
+            "StyleCore configuration (*.json);;JSON (*.json)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        config = {
+            "name": name_edit.text().strip() or "StyleCore",
+            "root_folder": root,
+            "folders": {
+                "styles": styles_edit.text().strip() or "layer_styles",
+                "templates": templates_edit.text().strip() or "template_projects",
+                "layouts": layouts_edit.text().strip() or "layouts",
+            },
+            "geojson_suffix_styles": {},
+            "restyle_on_open": [
+                "template_main",
+                "template_placeholder_2",
+                "template_placeholder_3",
+            ],
+        }
+
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(config, handle, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                tr("Kunne ikke gemme konfiguration"),
+                str(exc),
+            )
+            return
+
+        self.activate_configuration(path, config)
 
     def choose_root_folder(self):
         start_folder = self.current_root_folder()
         folder = QFileDialog.getExistingDirectory(
             self,
-            "Vælg fælles DMIKG-mappe",
+            tr("Vælg fælles StyleCore-mappe"),
             start_folder,
         )
 
@@ -175,8 +370,19 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         if not os.path.isdir(style_folder):
             return styles
 
+        geojson_style_filenames = {
+            rule.get("style_filename", "").casefold()
+            for rule in get_geojson_suffix_styles().values()
+            if rule.get("style_filename", "")
+        }
+
         for filename in os.listdir(style_folder):
             if not filename.lower().endswith(".qml"):
+                continue
+
+            # GeoJSON QML files are shown through their suffix rules below.
+            # Skip them here so they are not listed twice in the settings.
+            if filename.casefold() in geojson_style_filenames:
                 continue
 
             layer_name = os.path.splitext(filename)[0]
@@ -184,12 +390,55 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
 
         return styles
 
+    def load_restyle_templates(self):
+        configured = get_restyle_templates()
+        configured_keys = {name.casefold() for name in configured}
+
+        available = {}
+        template_folder = os.path.join(
+            self.current_root_folder(),
+            get_folder_name("templates"),
+        ) if self.current_root_folder() else ""
+
+        if os.path.isdir(template_folder):
+            for filename in os.listdir(template_folder):
+                if not filename.lower().endswith((".qgz", ".qgs")):
+                    continue
+                name = os.path.splitext(filename)[0]
+                available[name.casefold()] = name
+
+        for name in configured:
+            available.setdefault(name.casefold(), name)
+
+        self.restyle_template_list.blockSignals(True)
+        self.restyle_template_list.clear()
+        for key in sorted(available, key=lambda value: available[value].casefold()):
+            name = available[key]
+            item = QListWidgetItem(name)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if key in configured_keys
+                else Qt.CheckState.Unchecked
+            )
+            self.restyle_template_list.addItem(item)
+        self.restyle_template_list.blockSignals(False)
+
+    def selected_restyle_templates(self):
+        return [
+            self.restyle_template_list.item(i).text().strip()
+            for i in range(self.restyle_template_list.count())
+            if self.restyle_template_list.item(i).checkState() == Qt.CheckState.Checked
+            and self.restyle_template_list.item(i).text().strip()
+        ]
+
     def load_settings(self):
+        self.load_restyle_templates()
         settings = QSettings()
         custom_rules = settings.value(SETTINGS_KEY, [], type=list)
         standard_styles = self.get_standard_styles()
 
-        for suffix in GEOJSON_SUFFIX_STYLES:
+        for suffix in get_geojson_suffix_styles():
             standard_styles[suffix] = get_geojson_style_path(
                 suffix,
                 self.current_style_folder(),
@@ -200,7 +449,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         for layer_name, standard_path in sorted(standard_styles.items()):
             style_path = standard_path
 
-            if layer_name in GEOJSON_SUFFIX_STYLES:
+            if layer_name in get_geojson_suffix_styles():
                 status = "GeoJSON"
             else:
                 status = "Standard"
@@ -230,7 +479,8 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
 
         layer_item = QTableWidgetItem(layer_name)
         style_item = QTableWidgetItem(style_path)
-        status_item = QTableWidgetItem(status)
+        status_item = QTableWidgetItem(tr(status))
+        status_item.setData(Qt.ItemDataRole.UserRole, status)
 
         status_item.setFlags(status_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
@@ -249,13 +499,13 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         if not status_item:
             return
 
-        current_status = status_item.text()
+        current_status = status_item.data(Qt.ItemDataRole.UserRole) or status_item.text()
         current_item = self.table.item(row, 1)
         start_path = current_item.text() if current_item else self.current_style_folder()
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Vælg QGIS style",
+            tr("Vælg QGIS style"),
             start_path,
             "QGIS style (*.qml)",
         )
@@ -266,9 +516,11 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         self.table.setItem(row, 1, QTableWidgetItem(file_path))
 
         if current_status in ("Standard", "Tilpasset", "GeoJSON"):
-            status_item.setText("Tilpasset")
+            status_item.setText(tr("Tilpasset"))
+            status_item.setData(Qt.ItemDataRole.UserRole, "Tilpasset")
         else:
-            status_item.setText("Brugerregel")
+            status_item.setText(tr("Brugerregel"))
+            status_item.setData(Qt.ItemDataRole.UserRole, "Brugerregel")
 
         self.update_buttons()
 
@@ -284,7 +536,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
             return
 
         status_item = self.table.item(row, 2)
-        if not status_item or status_item.text() != "Brugerregel":
+        if not status_item or (status_item.data(Qt.ItemDataRole.UserRole) or status_item.text()) != "Brugerregel":
             return
 
         self.table.removeRow(row)
@@ -298,12 +550,12 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         layer_item = self.table.item(row, 0)
         status_item = self.table.item(row, 2)
 
-        if not layer_item or not status_item or status_item.text() != "Tilpasset":
+        if not layer_item or not status_item or (status_item.data(Qt.ItemDataRole.UserRole) or status_item.text()) != "Tilpasset":
             return
 
         layer_name = layer_item.text()
 
-        if layer_name in GEOJSON_SUFFIX_STYLES:
+        if layer_name in get_geojson_suffix_styles():
             standard_path = get_geojson_style_path(
                 layer_name,
                 self.current_style_folder(),
@@ -317,7 +569,8 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
             reset_status = "Standard"
 
         self.table.setItem(row, 1, QTableWidgetItem(standard_path))
-        status_item.setText(reset_status)
+        status_item.setText(tr(reset_status))
+        status_item.setData(Qt.ItemDataRole.UserRole, reset_status)
         self.update_buttons()
 
     def update_buttons(self):
@@ -334,7 +587,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
             self.reset_button.setEnabled(False)
             return
 
-        status = status_item.text()
+        status = status_item.data(Qt.ItemDataRole.UserRole) or status_item.text()
         self.remove_button.setEnabled(status == "Brugerregel")
         self.reset_button.setEnabled(status == "Tilpasset")
 
@@ -344,12 +597,12 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         self.save_all_styles_button.setVisible(enabled)
 
     def save_selected_styles(self):
-        """Lad udvikleren vælge projektlag før der skrives til fællesmappen."""
+        """Let the developer select project layers before writing to the shared folder."""
         style_folder = self.current_style_folder()
         if not os.path.isdir(style_folder):
             QMessageBox.warning(
-                self, "DMIKG Auto",
-                f"Style-mappen blev ikke fundet:\n{style_folder}",
+                self, "StyleCore",
+                tr(f"Style-mappen blev ikke fundet:\n{style_folder}"),
             )
             return
 
@@ -359,11 +612,11 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
             key=lambda layer: layer.name().casefold(),
         )
         if not layers:
-            QMessageBox.information(self, "DMIKG Auto", "Projektet har ingen gyldige lag.")
+            QMessageBox.information(self, "StyleCore", tr("Projektet har ingen gyldige lag."))
             return
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Gem lagstyles")
+        dialog.setWindowTitle(tr("Gem lagstyles"))
         dialog.resize(560, 500)
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel(
@@ -381,8 +634,8 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         layout.addWidget(layer_list)
 
         controls = QHBoxLayout()
-        select_all = QPushButton("Vælg alle", dialog)
-        deselect_all = QPushButton("Fravælg alle", dialog)
+        select_all = QPushButton(tr("Vælg alle"), dialog)
+        deselect_all = QPushButton(tr("Fravælg alle"), dialog)
         select_all.clicked.connect(lambda: self.set_layer_checks(
             layer_list, Qt.CheckState.Checked
         ))
@@ -400,7 +653,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
             parent=dialog,
         )
         save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
-        save_button.setText("Gem valgte")
+        save_button.setText(tr("Gem valgte"))
         save_button.setEnabled(False)
         layer_list.itemChanged.connect(lambda _item: save_button.setEnabled(
             any(layer_list.item(i).checkState() == Qt.CheckState.Checked
@@ -426,33 +679,33 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
                              if names.count(layer.name().casefold()) > 1})
         if duplicates:
             QMessageBox.warning(
-                self, "Samme lagnavn flere gange",
-                "Flere valgte lag har samme navn og ville overskrive samme QML. "
-                "Vælg kun ét lag pr. navn:\n" + "\n".join(duplicates),
+                self, tr("Samme lagnavn flere gange"),
+                tr("Flere valgte lag har samme navn og ville overskrive samme QML. "
+                "Vælg kun ét lag pr. navn:\n") + "\n".join(duplicates),
             )
             return
 
         code, ok = QInputDialog.getText(
-            self, "Bekræft udviklerhandling",
-            "Indtast udviklerkoden for at fortsætte:",
+            self, tr("Bekræft udviklerhandling"),
+            tr("Indtast udviklerkoden for at fortsætte:"),
             QLineEdit.EchoMode.Password,
         )
         if not ok:
             return
-        if code != DEVELOPER_CODE:
+        if code != get_developer_code():
             QMessageBox.warning(
-                self, "Forkert kode", "Udviklerkoden er forkert. Ingen styles blev gemt."
+                self, tr("Forkert kode"), tr("Udviklerkoden er forkert. Ingen styles blev gemt.")
             )
             return
 
         reply = QMessageBox.question(
             self,
-            "Bekræft gemning af lagstyles",
+            tr("Bekræft gemning af lagstyles"),
             (
-                f"Du er ved at gemme {len(selected)} valgte lagstyle(s) "
+                tr(f"Du er ved at gemme {len(selected)} valgte lagstyle(s) "
                 "til den fælles layer_styles-mappe.\n\n"
                 "Eksisterende standard-QML-filer vil blive overskrevet.\n\n"
-                "Vil du fortsætte?"
+                "Vil du fortsætte?")
             ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -476,7 +729,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
                     os.path.basename(source_path)
                 )[0]
 
-                for suffix, rule in GEOJSON_SUFFIX_STYLES.items():
+                for suffix, rule in get_geojson_suffix_styles().items():
                     if geojson_name.casefold().endswith(suffix.casefold()):
                         geojson_rule_key = suffix
                         break
@@ -544,7 +797,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
             )
 
             if standard_exists and external_exists:
-                question = (
+                question = tr(
                     "Dette lag bruger en ekstern style-override.\n\n"
                     "Du er ved at overskrive standard-QML-filen med "
                     "lagets aktuelle style.\n\n"
@@ -556,7 +809,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
 
                 reply = QMessageBox.question(
                     self,
-                    "Bekræft overskrivning af standardstyle",
+                    tr("Bekræft overskrivning af standardstyle"),
                     question,
                     QMessageBox.StandardButton.Yes
                     | QMessageBox.StandardButton.No,
@@ -578,7 +831,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
 
             try:
                 fd, temp_path = tempfile.mkstemp(
-                    prefix=".dmikg_style_",
+                    prefix=".stylecore_style_",
                     suffix=".qml",
                     dir=target_folder
                 )
@@ -609,13 +862,13 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
                 if temp_path and os.path.exists(temp_path):
                     os.remove(temp_path)
         summary = [
-            f"Gemte styles: {len(saved)}",
-            f"Fravalgt ved bekræftelse: {len(skipped)}",
-            f"Fejl: {len(failed)}",
+            tr(f"Gemte styles: {len(saved)}"),
+            tr(f"Fravalgt ved bekræftelse: {len(skipped)}"),
+            tr(f"Fejl: {len(failed)}"),
         ]
         if failed:
-            summary.append("\nFejl:\n" + "\n".join(failed[:10]))
-        QMessageBox.information(self, "DMIKG Auto – gemning færdig", "\n".join(summary))
+            summary.append(tr("\nFejl:\n") + "\n".join(failed[:10]))
+        QMessageBox.information(self, tr("StyleCore – gemning færdig"), "\n".join(summary))
         self.load_settings()
 
     @staticmethod
@@ -635,7 +888,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
                 continue
 
             layer_name = layer_item.text().strip()
-            status = status_item.text()
+            status = status_item.data(Qt.ItemDataRole.UserRole) or status_item.text()
             style_path = style_item.text().strip() if style_item else ""
 
             if status in ("Standard", "GeoJSON"):
@@ -659,6 +912,16 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
         settings.setValue(DEVELOPER_MODE_KEY, self.developer_checkbox.isChecked())
         settings.setValue(ROOT_FOLDER_KEY, new_root_folder)
 
+        try:
+            save_restyle_templates(self.selected_restyle_templates())
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                tr("Kunne ikke gemme template-valg"),
+                tr("Valget af templates kunne ikke gemmes i den aktive konfiguration:")
+                + f"\n{exc}",
+            )
+
         if self.enabled_changed_callback:
             self.enabled_changed_callback(self.enabled_checkbox.isChecked())
 
@@ -670,7 +933,7 @@ class DmikgAutoOptionsPage(QgsOptionsPageWidget):
             self.root_folder_changed_callback()
 
 
-class DmikgAutoOptionsFactory(QgsOptionsWidgetFactory):
+class StyleCoreOptionsFactory(QgsOptionsWidgetFactory):
 
     def __init__(
         self,
@@ -681,16 +944,16 @@ class DmikgAutoOptionsFactory(QgsOptionsWidgetFactory):
 
         self.enabled_changed_callback = enabled_changed_callback
         self.root_folder_changed_callback = root_folder_changed_callback
-        self.setTitle("DMIKG Auto")
+        self.setTitle("StyleCore")
 
         plugin_dir = os.path.dirname(__file__)
-        self.icon_path = os.path.join(plugin_dir, "kds_logo.png")
+        self.icon_path = os.path.join(plugin_dir, "stylecore_icon.png")
 
     def icon(self):
         return QIcon(self.icon_path)
 
     def createWidget(self, parent):
-        return DmikgAutoOptionsPage(
+        return StyleCoreOptionsPage(
             parent,
             enabled_changed_callback=self.enabled_changed_callback,
             root_folder_changed_callback=self.root_folder_changed_callback,

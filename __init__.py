@@ -1,3 +1,3 @@
 def classFactory(iface):
-    from .dmikg_auto import DmikgAuto
-    return DmikgAuto(iface)
+    from .stylecore import StyleCore
+    return StyleCore(iface)
