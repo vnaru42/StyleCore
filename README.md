@@ -230,14 +230,6 @@ without modifying the StyleCore plugin itself.
 For organization-specific setups, the recommended approach is to keep the generic StyleCore plugin unchanged and distribute a separate 
 configuration and resource folder.
 
-## Language
-
-English is the default StyleCore interface language.
-
-If QGIS is configured to use Danish (`da` or `da_DK`), StyleCore automatically displays its interface in Danish.
-
-All other QGIS languages currently fall back to English.
-
 ## Version
 
 1.5.0
