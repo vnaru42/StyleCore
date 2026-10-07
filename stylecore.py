@@ -29,6 +29,10 @@ class StyleCore:
         self.enabled_action = None
         self.print_manager = StyleCorePrintLayouts(iface)
         self.main_menu = None
+        self._project_loading = False
+        self._project_load_skipped_count = 0
+        self._pending_project_identity = []
+        self._pending_project_raw_identity = []
 
     def initGui(self):
         self.register_fonts()
@@ -40,9 +44,12 @@ class StyleCore:
         # without requiring a QGIS restart.
         QTimer.singleShot(250, self.sync_resources)
 
-        QgsProject.instance().layersAdded.connect(self.layers_added)
-
-        QgsProject.instance().readProject.connect(self.project_loaded)
+        project = QgsProject.instance()
+        project.layersAdded.connect(self.layers_added)
+        project.loadingLayer.connect(self.project_loading_started)
+        project.layerLoaded.connect(self.project_layer_loaded)
+        project.readProject.connect(self.capture_project_identity)
+        self.iface.projectRead.connect(self.project_read_complete)
 
         self.options_factory = StyleCoreOptionsFactory(
             enabled_changed_callback=self.set_auto_enabled,
@@ -396,8 +403,12 @@ class StyleCore:
             self.print_menu_actions.append(action)
 
     def unload(self):
-        QgsProject.instance().layersAdded.disconnect(self.layers_added)
-        QgsProject.instance().readProject.disconnect(self.project_loaded)
+        project = QgsProject.instance()
+        project.layersAdded.disconnect(self.layers_added)
+        project.loadingLayer.disconnect(self.project_loading_started)
+        project.layerLoaded.disconnect(self.project_layer_loaded)
+        project.readProject.disconnect(self.capture_project_identity)
+        self.iface.projectRead.disconnect(self.project_read_complete)
 
         if self.options_factory:
             self.iface.unregisterOptionsWidgetFactory(
@@ -409,7 +420,31 @@ class StyleCore:
             self.action.deleteLater()
             self.action = None
 
+    def project_loading_started(self, *args):
+        """Mark layers emitted while a saved project/template is being read."""
+        if not self._project_loading:
+            self._project_load_skipped_count = 0
+            self._pending_project_identity = []
+            self._pending_project_raw_identity = []
+            QgsMessageLog.logMessage(
+                "Project loading started - existing project layers will keep their saved styles during load.",
+                "StyleCore",
+                level=Qgis.Info
+            )
+        self._project_loading = True
+
+    def project_layer_loaded(self, index, total):
+        """Keep the load guard active until QgisInterface.projectRead is emitted."""
+        self._project_loading = True
+
     def layers_added(self, layers):
+        # QGIS also emits layersAdded for layers restored from a saved project.
+        # Keep these untouched. Explicitly selected templates are refreshed only
+        # after QGIS emits iface.projectRead (successful project read).
+        if self._project_loading:
+            self._project_load_skipped_count += len(layers)
+            return
+
         settings = QSettings()
 
         enabled = settings.value(
@@ -419,37 +454,208 @@ class StyleCore:
         )
 
         if not enabled:
+            QgsMessageLog.logMessage(
+                f"Automatic styling disabled - {len(layers)} newly added layer(s) left unchanged.",
+                "StyleCore",
+                level=Qgis.Info
+            )
             return
 
         for layer in layers:
+            QgsMessageLog.logMessage(
+                f"New layer detected: {layer.name()} - checking for matching StyleCore style.",
+                "StyleCore",
+                level=Qgis.Info
+            )
             self.process_layer(layer)
 
     def process_layer(self, layer):
         self.apply_style(layer)
 
-    def project_loaded(self, *args):
+    def capture_project_identity(self, document):
+        """Capture template identity from the project XML while it is being read."""
+        candidates = []
+        raw_values = []
+        seen = set()
+
+        def add_candidate(source, value):
+            value = str(value or "").strip()
+            if not value:
+                return
+            raw_values.append((source, value))
+            if source in ("fileName", "originalPath"):
+                name = os.path.splitext(os.path.basename(value))[0].strip()
+            else:
+                name = value
+            key = name.casefold()
+            if name and key not in seen:
+                seen.add(key)
+                candidates.append((source, name))
+
         project = QgsProject.instance()
+        for getter_name in ("fileName", "originalPath", "title"):
+            try:
+                add_candidate(getter_name, getattr(project, getter_name)())
+            except Exception:
+                pass
 
-        project_path = project.fileName()
-        project_name = os.path.splitext(
-            os.path.basename(project_path)
-        )[0]
+        try:
+            root = document.documentElement()
+            for attr_name in ("projectname", "name", "title"):
+                add_candidate(f"xml:{attr_name}", root.attribute(attr_name))
 
-        restyle_templates = {
-            name.casefold() for name in get_restyle_templates()
-        }
+            title_element = root.firstChildElement("title")
+            if not title_element.isNull():
+                add_candidate("xml:title", title_element.text())
+        except Exception as exc:
+            QgsMessageLog.logMessage(
+                f"Could not inspect project XML identity: {exc}",
+                "StyleCore",
+                level=Qgis.Warning
+            )
 
-        if project_name.casefold() not in restyle_templates:
-            return
+        self._pending_project_identity = candidates
+        self._pending_project_raw_identity = raw_values
 
+        captured = ", ".join(
+            f"{source}='{value}'" for source, value in raw_values
+        ) or "no project identity found in project/XML yet"
         QgsMessageLog.logMessage(
-            f"Template '{project_name}' opened - refreshing layer styles",
+            f"Project read event - captured identity: {captured}.",
             "StyleCore",
             level=Qgis.Info
         )
 
-        for layer in project.mapLayers().values():
-            self.apply_style(layer)
+    def _current_project_identity(self):
+        """Return identity candidates available after QGIS has completed reading."""
+        project = QgsProject.instance()
+        candidates = []
+        raw_values = []
+        seen = set()
+
+        for getter_name in ("fileName", "originalPath", "title"):
+            try:
+                value = getattr(project, getter_name)()
+            except Exception:
+                value = ""
+            value = str(value or "").strip()
+            if not value:
+                continue
+            raw_values.append((getter_name, value))
+            if getter_name in ("fileName", "originalPath"):
+                name = os.path.splitext(os.path.basename(value))[0].strip()
+            else:
+                name = value
+            key = name.casefold()
+            if name and key not in seen:
+                seen.add(key)
+                candidates.append((getter_name, name))
+
+        return candidates, raw_values
+
+    def project_read_complete(self):
+        """Handle successful project reads without arbitrary time delays."""
+        self._project_loading = False
+
+        if self._project_load_skipped_count:
+            QgsMessageLog.logMessage(
+                f"Project load finished - preserved saved styles on {self._project_load_skipped_count} loaded layer(s).",
+                "StyleCore",
+                level=Qgis.Info
+            )
+
+        current_candidates, current_raw = self._current_project_identity()
+
+        # Merge identities captured from the XML/read phase with identities which
+        # QGIS exposes only after the project has been successfully read.
+        combined = []
+        seen = set()
+        for source, name in self._pending_project_identity + current_candidates:
+            key = name.casefold()
+            if key not in seen:
+                seen.add(key)
+                combined.append((source, name))
+
+        raw_values = self._pending_project_raw_identity + [
+            pair for pair in current_raw if pair not in self._pending_project_raw_identity
+        ]
+
+        self.restyle_selected_template(combined, raw_values)
+
+        self._pending_project_identity = []
+        self._pending_project_raw_identity = []
+        self._project_load_skipped_count = 0
+
+    def restyle_selected_template(self, candidates, raw_values):
+        project = QgsProject.instance()
+
+        configured = get_restyle_templates()
+        configured_by_key = {name.casefold(): name for name in configured}
+
+        identity_text = ", ".join(
+            f"{source}='{value}'" for source, value in raw_values
+        ) or "no filename/title/XML identity available"
+
+        QgsMessageLog.logMessage(
+            f"Project opened - identity check: {identity_text}. Configured restyle templates: {configured or 'none'}.",
+            "StyleCore",
+            level=Qgis.Info
+        )
+
+        matched_name = None
+        matched_source = None
+        for source, candidate in candidates:
+            configured_name = configured_by_key.get(candidate.casefold())
+            if configured_name:
+                matched_name = configured_name
+                matched_source = source
+                break
+
+        if not matched_name:
+            QgsMessageLog.logMessage(
+                "No configured template matched - saved project styles are preserved.",
+                "StyleCore",
+                level=Qgis.Info
+            )
+            return
+
+        QgsMessageLog.logMessage(
+            f"Recognized configured template '{matched_name}' via {matched_source} - template restyling will run.",
+            "StyleCore",
+            level=Qgis.Info
+        )
+
+        settings = QSettings()
+        enabled = settings.value(
+            ENABLED_KEY,
+            True,
+            type=bool
+        )
+        if not enabled:
+            QgsMessageLog.logMessage(
+                f"Template '{matched_name}' recognized, but automatic styling is disabled - no layers restyled.",
+                "StyleCore",
+                level=Qgis.Info
+            )
+            return
+
+        layers = list(project.mapLayers().values())
+        QgsMessageLog.logMessage(
+            f"Template '{matched_name}' - checking {len(layers)} layer(s) for matching styles.",
+            "StyleCore",
+            level=Qgis.Info
+        )
+
+        applied = 0
+        for layer in layers:
+            if self.apply_style(layer):
+                applied += 1
+
+        QgsMessageLog.logMessage(
+            f"Template '{matched_name}' restyle finished - {applied} of {len(layers)} layer(s) styled.",
+            "StyleCore",
+            level=Qgis.Info
+        )
 
     def apply_style(self, layer):
         settings = QSettings()
@@ -495,7 +701,7 @@ class StyleCore:
                             level=Qgis.Warning
                         )
 
-                    return
+                    return success
 
         standard_style_path = os.path.join(
             get_style_folder(),
@@ -546,7 +752,7 @@ class StyleCore:
                             level=Qgis.Warning
                         )
 
-                    return
+                    return success
 
                 break
 
@@ -565,7 +771,12 @@ class StyleCore:
             )
 
         if not style_candidates:
-            return
+            QgsMessageLog.logMessage(
+                f"No matching style found for {layer_name} - layer left unchanged.",
+                "StyleCore",
+                level=Qgis.Info
+            )
+            return False
 
         style_path = max(
             style_candidates,
@@ -587,6 +798,7 @@ class StyleCore:
                 "StyleCore",
                 level=Qgis.Info
             )
+            return True
 
         else:
             QgsMessageLog.logMessage(
@@ -597,3 +809,4 @@ class StyleCore:
                 "StyleCore",
                 level=Qgis.Warning
             )
+            return False

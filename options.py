@@ -27,6 +27,7 @@ from qgis.PyQt.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
 )
 from qgis.gui import QgsOptionsPageWidget, QgsOptionsWidgetFactory
@@ -42,7 +43,6 @@ from .config import (
     get_geojson_suffix_styles,
     get_root_folder,
     get_config_file,
-    get_bundled_config_file,
     load_external_config,
     get_configuration_name,
     get_developer_code,
@@ -51,6 +51,40 @@ from .config import (
     get_restyle_templates,
     save_restyle_templates,
 )
+
+
+class CollapsibleSection(QWidget):
+    """Small arrow-header section used to keep the options page compact."""
+
+    def __init__(self, title, parent=None, expanded=False):
+        super().__init__(parent)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
+
+        self.toggle_button = QToolButton(self)
+        self.toggle_button.setText(title)
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setChecked(expanded)
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.toggle_button.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.toggle_button.setStyleSheet("QToolButton { border: none; font-weight: 600; }")
+        self.toggle_button.toggled.connect(self._set_expanded)
+        outer.addWidget(self.toggle_button)
+
+        self.content = QWidget(self)
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(18, 0, 0, 6)
+        self.content.setVisible(expanded)
+        outer.addWidget(self.content)
+
+    def _set_expanded(self, expanded):
+        self.toggle_button.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.content.setVisible(expanded)
 
 
 class StyleCoreOptionsPage(QgsOptionsPageWidget):
@@ -76,8 +110,8 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
 
-        config_group = QGroupBox(tr("Konfiguration"))
-        config_layout = QVBoxLayout(config_group)
+        config_group = CollapsibleSection(tr("Konfiguration"), expanded=False)
+        config_layout = config_group.content_layout
         self.config_status = QLabel()
         self.config_status.setWordWrap(True)
         config_layout.addWidget(self.config_status)
@@ -173,8 +207,8 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         button_layout.addStretch()
         layout.addLayout(button_layout)
 
-        developer_group = QGroupBox(tr("Udvikler"))
-        developer_layout = QVBoxLayout(developer_group)
+        developer_group = CollapsibleSection(tr("Udvikler"), expanded=False)
+        developer_layout = developer_group.content_layout
 
         self.developer_checkbox = QCheckBox(tr("Aktivér udviklertilstand"))
         developer_enabled = QSettings().value(
@@ -614,11 +648,14 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
             )
             return
 
-        layers = sorted(
-            (layer for layer in QgsProject.instance().mapLayers().values()
-             if layer.isValid()),
-            key=lambda layer: layer.name().casefold(),
-        )
+        layers = []
+        seen_layer_ids = set()
+        for node in QgsProject.instance().layerTreeRoot().findLayers():
+            layer = node.layer()
+            if layer is None or not layer.isValid() or layer.id() in seen_layer_ids:
+                continue
+            seen_layer_ids.add(layer.id())
+            layers.append(layer)
         if not layers:
             QMessageBox.information(self, "StyleCore", tr("Projektet har ingen gyldige lag."))
             return
@@ -693,18 +730,24 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
             )
             return
 
-        code, ok = QInputDialog.getText(
-            self, tr("Bekræft udviklerhandling"),
-            tr("Indtast udviklerkoden for at fortsætte:"),
-            QLineEdit.EchoMode.Password,
-        )
-        if not ok:
-            return
-        if code != get_developer_code():
-            QMessageBox.warning(
-                self, tr("Forkert kode"), tr("Udviklerkoden er forkert. Ingen styles blev gemt.")
+        while True:
+            code, ok = QInputDialog.getText(
+                self, tr("Bekræft udviklerhandling"),
+                tr("Indtast udviklerkoden for at fortsætte:"),
+                QLineEdit.EchoMode.Password,
             )
-            return
+            if not ok:
+                # Explicit Cancel closes the operation. The temporary layer
+                # selection then disappears/reset with the dialog.
+                return
+            if code == get_developer_code():
+                break
+
+            QMessageBox.warning(
+                self,
+                tr("Forkert kode"),
+                tr("Udviklerkoden er forkert. Prøv igen, eller tryk Annuller."),
+            )
 
         reply = QMessageBox.question(
             self,
