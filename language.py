@@ -3,6 +3,18 @@ from qgis.PyQt.QtCore import QLocale, QSettings
 # English is the fallback language. Danish is used only when QGIS itself uses Danish.
 _DA_TO_EN = {
     "Ingen": "None",
+    "Manuel styleopdatering...": "Manual Style Update...",
+    "Manuel styleopdatering": "Manual Style Update",
+    "Ingen gyldige vektorlag i dette projekt.": "No valid vector layers in the current project.",
+    "Vælg et lag, kontrollér den foreslåede QML eller vælg en anden fil, og tryk Brug style. Andre projekter og automatiske regler ændres ikke.": "Select a layer, review the suggested QML or browse for another file, then click Use Style. Other projects and automatic rules are not changed.",
+    "QML-fil:": "QML file:",
+    "Gennemse...": "Browse...",
+    "Brug style": "Use Style",
+    "Luk": "Close",
+    "Ingen QML foreslået. Vælg en QML-fil manuelt.": "No matching QML suggested. Choose a QML file manually.",
+    "Vælg QML-style": "Choose QML style",
+    "Kunne ikke anvende QML-style:": "Could not apply QML style:",
+    "Style anvendt på dette lag. Gem QGIS-projektet for at beholde ændringen.": "Style applied to this layer. Save the QGIS project to keep it.",
     "Indstillinger...": "Settings...",
     "Automatisk styling": "Automatic styling",
     "StyleCore - automatisk styling deaktiveret": "StyleCore - automatic styling disabled",

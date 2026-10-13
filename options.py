@@ -35,6 +35,7 @@ from qgis.gui import QgsOptionsPageWidget, QgsOptionsWidgetFactory
 from .language import tr
 
 from .config import (
+    BUNDLED_CONFIG_DIR,
     CONFIG_FILE_KEY,
     DEVELOPER_MODE_KEY,
     ENABLED_KEY,
@@ -277,7 +278,7 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         path, _ = QFileDialog.getOpenFileName(
             self,
             tr("Indlæs StyleCore-konfiguration"),
-            os.path.dirname(get_config_file()) if get_config_file() else "",
+            BUNDLED_CONFIG_DIR,  # Always start in StyleCore/config, not the active file's folder.
             "StyleCore configuration (*.json);;JSON (*.json)",
         )
         if not path:

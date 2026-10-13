@@ -8,6 +8,7 @@ from qgis.PyQt.QtCore import QSettings, QTimer, Qt
 
 from .options import StyleCoreOptionsFactory
 from .print_layouts import StyleCorePrintLayouts
+from .manual_styles import StyleCoreManualStyles
 from .language import tr
 from .config import (
     ENABLED_KEY,
@@ -28,6 +29,7 @@ class StyleCore:
         self.tool_button = None
         self.enabled_action = None
         self.print_manager = StyleCorePrintLayouts(iface)
+        self.manual_styles = StyleCoreManualStyles(iface)
         self.main_menu = None
         self._project_loading = False
         self._project_load_skipped_count = 0
@@ -101,6 +103,11 @@ class StyleCore:
         )
 
         self.main_menu.addAction(self.enabled_action)
+
+        # Manual styling is an explicit, per-layer action for older projects.
+        manual_action = QAction(tr("Manuel styleopdatering..."), self.main_menu)
+        manual_action.triggered.connect(self.manual_styles.show_dialog)
+        self.main_menu.addAction(manual_action)
 
         self.print_menu_actions = []
         self.main_menu.aboutToShow.connect(self.refresh_print_menu)
@@ -461,16 +468,13 @@ class StyleCore:
             )
             return
 
-        for layer in layers:
-            QgsMessageLog.logMessage(
-                f"New layer detected: {layer.name()} - checking for matching StyleCore style.",
-                "StyleCore",
-                level=Qgis.Info
-            )
-            self.process_layer(layer)
-
-    def process_layer(self, layer):
-        self.apply_style(layer)
+        # One summary per batch; unmatched layers do not fill the message log.
+        applied = sum(bool(self.apply_style(layer)) for layer in layers)
+        QgsMessageLog.logMessage(
+            f"Automatic styling - {applied} of {len(layers)} new layer(s) styled.",
+            "StyleCore",
+            level=Qgis.Info,
+        )
 
     def capture_project_identity(self, document):
         """Capture template identity from the project XML while it is being read."""
@@ -771,11 +775,6 @@ class StyleCore:
             )
 
         if not style_candidates:
-            QgsMessageLog.logMessage(
-                f"No matching style found for {layer_name} - layer left unchanged.",
-                "StyleCore",
-                level=Qgis.Info
-            )
             return False
 
         style_path = max(

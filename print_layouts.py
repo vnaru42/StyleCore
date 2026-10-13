@@ -10,6 +10,7 @@ from qgis.core import (
     Qgis,
 )
 from qgis.PyQt.QtCore import QFile, QIODevice
+from qgis.gui import QgsLayoutDesignerInterface
 from qgis.PyQt.QtXml import QDomDocument
 from qgis.PyQt.QtWidgets import QMessageBox
 
@@ -83,7 +84,6 @@ class StyleCorePrintLayouts:
                 "StyleCore Print",
                 f"Kunne ikke læse layoutskabelonen:\n{exc}",
             )
-            template_file.close()
             return
         finally:
             if template_file.isOpen():
@@ -127,7 +127,19 @@ class StyleCorePrintLayouts:
             )
             return
 
-        self.iface.openLayoutDesigner(managed_layout)
+        designer = self.iface.openLayoutDesigner(managed_layout)
+        main_map = managed_layout.itemById("main_map")
+        if designer is not None and isinstance(main_map, QgsLayoutItemMap):
+            try:
+                # Select the map and open QGIS' native Move Item Content tool.
+                designer.selectItems([main_map])
+                designer.activateTool(QgsLayoutDesignerInterface.ToolMoveItemContent)
+            except (AttributeError, RuntimeError, TypeError) as exc:
+                QgsMessageLog.logMessage(
+                    f"Move Item Content could not be activated: {exc}",
+                    "StyleCore",
+                    level=Qgis.Warning,
+                )
 
     def unique_layout_name(self, base_name):
         """Avoid name collisions when the same layout is opened multiple times."""

@@ -89,6 +89,14 @@ StyleCore uses the active configuration to determine which style should be appli
 
 This makes it possible to maintain one shared set of styles for multiple users.
 
+## Manual Style Update
+
+Choose **Manual Style Update...** from the StyleCore toolbar menu to update styles on layers in an existing QGIS project, including older Oracle layers.
+
+Select a layer and review the suggested QML style, or browse for a different `.qml` file. Click **Use Style** to apply the style only to that selected layer. Save the QGIS project to keep the change.
+
+Suggestions can match the QGIS layer name or the underlying Oracle table/view name. **No automatic styling rule or permanent Oracle source association is created**, and other existing projects are not changed.
+
 ## GeoJSON Suffix Rules
 
 StyleCore supports optional style rules for GeoJSON files based on filename suffixes.
@@ -169,6 +177,8 @@ StyleCore automatically scans this folder and adds the available layouts to the 
 
 Selecting a layout opens it in the QGIS Layout Designer.
 
+If the layout contains a map item with the Item ID `main_map`, StyleCore selects that map and activates **Move Item Content** automatically. You can immediately drag the map contents without selecting the tool yourself.
+
 ### Recommended map Item IDs
 
 For automatic map handling, the following Item IDs are recommended:
@@ -232,4 +242,4 @@ configuration and resource folder.
 
 ## Version
 
-1.6.0
+1.7.0
