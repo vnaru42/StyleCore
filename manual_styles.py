@@ -17,7 +17,7 @@ from qgis.PyQt.QtWidgets import (
     QVBoxLayout,
 )
 
-from .config import get_style_folder
+from .config import get_style_folder, get_effective_style_rules, resolve_style_path
 from .language import tr
 
 
@@ -43,17 +43,17 @@ class StyleCoreManualStyles:
         if not layers:
             QMessageBox.information(
                 self.iface.mainWindow(), "StyleCore",
-                tr("Ingen gyldige vektorlag i dette projekt."),
+                tr('No valid vector layers in the current project.'),
             )
             return
 
         dialog = QDialog(self.iface.mainWindow())
-        dialog.setWindowTitle(tr("Manuel styleopdatering"))
+        dialog.setWindowTitle(tr('Manual Style Update'))
         dialog.resize(620, 490)
         layout = QVBoxLayout(dialog)
         help_text = QLabel(tr(
-            "Vælg et lag, kontrollér den foreslåede QML eller vælg en anden fil, "
-            "og tryk Brug style. Andre projekter og automatiske regler ændres ikke."
+            "Select a layer, review the suggested QML or browse for another file, "
+            "then click Use Style. Other projects and automatic rules are not changed."
         ))
         help_text.setWordWrap(True)
         layout.addWidget(help_text)
@@ -65,10 +65,10 @@ class StyleCoreManualStyles:
             layer_list.addItem(item)
         layout.addWidget(layer_list)
 
-        layout.addWidget(QLabel(tr("QML-fil:")))
+        layout.addWidget(QLabel(tr('QML file:')))
         file_row = QHBoxLayout()
         path_edit = QLineEdit(dialog)
-        browse = QPushButton(tr("Gennemse..."), dialog)
+        browse = QPushButton(tr('Browse...'), dialog)
         file_row.addWidget(path_edit)
         file_row.addWidget(browse)
         layout.addLayout(file_row)
@@ -78,8 +78,8 @@ class StyleCoreManualStyles:
         layout.addWidget(status)
 
         buttons = QHBoxLayout()
-        use_button = QPushButton(tr("Brug style"), dialog)
-        close_button = QPushButton(tr("Luk"), dialog)
+        use_button = QPushButton(tr('Use Style'), dialog)
+        close_button = QPushButton(tr('Close'), dialog)
         use_button.setEnabled(False)
         buttons.addWidget(use_button)
         buttons.addStretch()
@@ -98,6 +98,14 @@ class StyleCoreManualStyles:
         except OSError:
             available = {}
 
+        # Explicit config mappings can also be suggested for older projects;
+        # the user must still click Use Style. No source-wide rule is created.
+        explicit = {
+            str(rule.get("layer", "")).casefold(): resolve_style_path(rule.get("style", ""))
+            for rule in get_effective_style_rules()
+            if rule.get("layer") and rule.get("style")
+        }
+
         def chosen_layer():
             item = layer_list.currentItem()
             return project.mapLayer(item.data(Qt.ItemDataRole.UserRole)) if item else None
@@ -113,6 +121,9 @@ class StyleCoreManualStyles:
                 except (AttributeError, ValueError):
                     pass
             for name in candidates:
+                match = explicit.get(name.casefold())
+                if match and os.path.isfile(match):
+                    return match
                 match = available.get(name.casefold())
                 if match:
                     return match
@@ -130,7 +141,7 @@ class StyleCoreManualStyles:
             layer = chosen_layer()
             path_edit.setText(suggested_path(layer) if layer else "")
             status.setText("" if path_edit.text() else tr(
-                "Ingen QML foreslået. Vælg en QML-fil manuelt."
+                'No matching QML suggested. Choose a QML file manually.'
             ))
             refresh_apply_button()
 
@@ -138,7 +149,7 @@ class StyleCoreManualStyles:
             current = path_edit.text().strip()
             start = os.path.dirname(current) if current else style_folder
             path, _ = QFileDialog.getOpenFileName(
-                dialog, tr("Vælg QML-style"), start, "QGIS style (*.qml)",
+                dialog, tr('Choose QML style'), start, "QGIS style (*.qml)",
             )
             if path:
                 path_edit.setText(path)
@@ -153,7 +164,7 @@ class StyleCoreManualStyles:
             except Exception as exc:
                 message, success = str(exc), False
             if not success:
-                QMessageBox.warning(dialog, "StyleCore", tr("Kunne ikke anvende QML-style:") + "\n" + str(message))
+                QMessageBox.warning(dialog, "StyleCore", tr('Could not apply QML style:') + "\n" + str(message))
                 return
 
             layer.triggerRepaint()
@@ -164,7 +175,7 @@ class StyleCoreManualStyles:
                 f"Manual style applied to {layer.name()}: {path}",
                 "StyleCore", level=Qgis.Info,
             )
-            status.setText(tr("Style anvendt på dette lag. Gem QGIS-projektet for at beholde ændringen."))
+            status.setText(tr('Style applied to this layer. Save the QGIS project to keep it.'))
 
         layer_list.currentItemChanged.connect(layer_changed)
         path_edit.textChanged.connect(refresh_apply_button)

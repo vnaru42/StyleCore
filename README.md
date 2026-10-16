@@ -23,8 +23,33 @@ For use in shared environment and organizations, its best distributed with prede
 
 Under **Settings > Options > StyleCore**, you can:
 
-- **Load configuration...** – Select an existing StyleCore JSON configuration.
-- **New configuration...** – Create and save a new StyleCore JSON configuration.
+- **New configuration...** – Create a JSON configuration and three resource folders, using only the QGIS dialog.
+- **Load configuration...** – Open a shared configuration on your local/network drive.
+- **Shared automatic layer styles (JSON)** – View the organization's mappings, including arbitrary layer names mapped to arbitrary `.qml` filenames.
+- **Edit shared configuration (administrator)** – Explicitly enable shared editing before changing shared mappings, resource roots, or the list of templates refreshed on open. The shared JSON is written only when these settings really change.
+- **Personal style overrides** – Map any layer name to a different QML **without changing the shared JSON**. They are saved in your local QGIS profile and scoped to the selected configuration.
+- **Reset to shared default** – Select a personal override, remove it and click **Apply**. The next automatic styling event will use the original shared mapping or default name matching.
+
+**Important:** The administrator checkbox is not an access-control system. Use server file permissions to give only administrators write access to the shared JSON and QML files. Other users require read access only to load and use them.
+
+### Style priority
+
+1. Personal layer/suffix override, when present and valid.
+2. Shared explicit layer/suffix mapping from JSON.
+3. Standard QML with the same name as the layer, or configured GeoJSON suffix QML (for this fallback, the newest existing candidate wins).
+4. If nothing can be loaded, leave the current layer style unchanged.
+
+A missing or invalid personal QML falls through to the shared default. Several different layers may reference the same QML. QML files inside the shared styles folder are recorded relative to that folder. Personal overrides can also refer to a file elsewhere on the user's computer.
+
+Reset does **not** immediately restyle layers in existing saved projects: StyleCore preserves saved project styling unless the project is an opted-in template. You can explicitly update existing layers using **Manual Style Update**. Applying a manual style never creates an automatic association.
+
+To share a new setup, distribute the JSON **and the shared resource folders**, and ensure the same UNC root path and data sources are accessible on all colleagues' PCs. Existing Oracle/WMS/WFS source permissions, local fonts and external SVG paths are not bundled in the JSON.
+
+### Upgrading from earlier versions
+
+Old v1.7 profile-wide `StyleCore/style_rules` are treated as personal overrides of the configuration that was active at startup. They are moved into config-specific local settings when the user saves personal overrides, not automatically to a shared JSON. If v1.8.0-beta1 had previously written a user's personal choice into `style_rules` in a shared JSON, review that JSON as an administrator: beta2 cannot reliably identify which shared mappings were intended to be personal.
+
+Template copies are now tracked in a local manifest to prevent collisions when changing configurations. StyleCore only removes previously managed, unmodified copies. Existing template copies from pre-beta2 versions are untracked; if a same-name file conflicts, it is preserved with a warning rather than silently overwritten. Resolve these conflicts manually using QGIS' local `project_templates` folder.
 
 StyleCore remembers the last selected configuration and automatically loads it the next time QGIS starts.
 
@@ -60,7 +85,10 @@ StyleCore_resources/
     "templates": "template_projects",
     "layouts": "layouts"
   },
-  "geojson_suffix_styles": {},
+  "style_rules": [
+    {"layer": "GNSS_PUNKTER", "style": "GNSS_Diamant.qml"}
+  ],
+  "file_suffix_styles": [],
   "restyle_on_open": [
     "template_main",
     "template_placeholder_2",
@@ -82,7 +110,20 @@ Automatic styling can be enabled or disabled from the StyleCore interface.
 
 ## Layer Style Matching
 
-Standard style rules can be based on layer names.
+Standard style rules can be based on layer names. **You can also assign any QML
+filename to any layer name through the StyleCore settings table:** click Add,
+enter the layer name, double-click the style path cell, and pick a QML. Click
+Apply to save the mapping to the active configuration file. The JSON stores
+files located inside the configured styles folder as relative paths, so the
+association travels with the configuration. A style outside the styles folder
+is stored as an absolute path, with a portability warning.
+
+Explicit configuration mappings take precedence over name matching. Switching
+configuration replaces these mappings; rules from another configuration do not
+carry over. An existing configuration from v1.7 without a style_rules field
+continues to support ordinary name matching and can be upgraded through Apply.
+Legacy profile-wide mappings from v1.7 are offered only in the configuration
+active on the first v1.8 start and are migrated when you press Apply.
 
 QML files are stored in the configured `layer_styles` folder. 
 StyleCore uses the active configuration to determine which style should be applied to each layer.
@@ -104,7 +145,7 @@ StyleCore supports optional style rules for GeoJSON files based on filename suff
 These rules are stored in the configuration under:
 
 ```json
-"geojson_suffix_styles": {}
+"file_suffix_styles": []
 ```
 
 This is useful when exported GeoJSON files follow a predictable naming pattern and should automatically receive different styles.
@@ -145,6 +186,8 @@ The templates that should be refreshed are selected under:
 **Settings > Options > StyleCore > Template refresh**
 
 StyleCore automatically lists `.qgz` and `.qgs` files found in the configured template folder.
+
+Only a genuine template project from the configured template directory or QGIS' local template directory (or an unsaved project identified as a template) is eligible for automatic restyling. A separately saved project with the same title is not eligible. Test **New from Template** on your specific QGIS version before wide rollout.
 
 Select the templates that should have their existing layers checked and restyled when opened.
 
@@ -234,6 +277,7 @@ This makes it possible for several users to use the same:
 - print layouts
 - GeoJSON rules
 - template refresh settings
+- explicit layer-to-QML associations
 
 without modifying the StyleCore plugin itself.
 
@@ -243,3 +287,36 @@ configuration and resource folder.
 ## Version
 
 1.7.0
+
+## Notes for Shared Network Configurations (v1.8 beta)
+
+- Place the JSON and the three resource folders on a UNC network share readable
+  by all users. Each colleague installs the same public StyleCore plugin and
+  selects that configuration from **Load Configuration**.
+- The JSON must be writable by the person editing settings; other users only
+  need read access. Coordinate changes to a shared config to avoid overwrites.
+- Data sources in QGIS project templates (Oracle, WFS, files, etc.) must also
+  be accessible to each colleague; StyleCore does not distribute those sources.
+- Developer **Save Layer Styles** respects explicit QML mappings when their
+  destination lies inside the configured shared styles folder. External styles
+  are not overwritten automatically.
+- The local automatic-styling enabled toggle remains a personal QGIS setting.
+
+
+## v1.8.0-beta3 – Settings organization
+
+The ordinary colleague workflow is at the top of Settings: automatic styling, personal QML overrides, per-layer reset, and Reset All. Personal edits are stored in the local QGIS profile, scoped to the active configuration, not in its shared JSON. Apply previews changed personal styles on matching layers in the currently open QGIS project when a QML is available; it does not modify saved projects elsewhere.
+
+Configuration and Developer are collapsed sections. Creating a new configuration prompts for a developer code (entered twice). Unlocking Developer requires that configuration's code. Shared mappings, template refresh, root directory, GeoJSON filename suffix rules, and shared QML saving are under Developer. Shared JSON is modified only after the additional Edit Shared Configuration choice and Apply.
+
+Note: The developer code is stored in plain text in the configuration JSON and is an interface guard, not secure access control. Shared server file permissions must enforce actual write restrictions. Existing configs without a developer_code continue to use the legacy default code. If no shared QML can be found for a removed personal override, existing project styling remains and a warning appears.
+
+
+## File Suffix Rules (v1.8.0)
+
+Developers can configure filename suffix rules with an explicit file extension and a QML file in **Settings → StyleCore → Developer → File Suffix Rules**. A match requires both the filename stem to end with the configured suffix and the source file extension to equal the configured extension (case-insensitive). Examples: `-observations` with `.geojson` or `-result` with `.shp`. Delimited text layers must be loaded through QGIS first. GeoPackage rules match the source file as a whole, not individual internal layers. Old `geojson_suffix_styles` entries are no longer read. Remove or convert them to `file_suffix_styles` manually (or recreate them through QGIS Developer settings); the old entries are not imported automatically. Personal overrides and exact layer mappings retain higher priority.
+
+
+### File type wildcard
+
+The **File type** column is a free-text field (no dropdown). Enter `kml` or `.kml`; StyleCore normalizes both to `.kml` when saving. Use `*` in the **File type** column to apply a suffix rule to any file extension. Rules are evaluated in table order, and only the first matching File Suffix Rule is used.

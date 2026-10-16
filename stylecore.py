@@ -1,5 +1,8 @@
 import os
 import shutil
+import json
+import hashlib
+import tempfile
 
 from qgis.core import QgsProject, QgsMessageLog, QgsApplication, Qgis
 from qgis.PyQt.QtGui import QFont, QIcon
@@ -12,12 +15,16 @@ from .manual_styles import StyleCoreManualStyles
 from .language import tr
 from .config import (
     ENABLED_KEY,
-    SETTINGS_KEY,
-    get_geojson_suffix_styles,
+    match_file_suffix_rule,
+    get_file_suffix_style_path,
     get_style_folder,
     get_template_folder,
-    get_geojson_style_path,
     get_restyle_templates,
+    get_style_rules,
+    load_external_config,
+    get_personal_style_rules,
+    resolve_style_path,
+    bind_legacy_style_rules,
 )
 
 class StyleCore:
@@ -39,6 +46,7 @@ class StyleCore:
     def initGui(self):
         self.register_fonts()
         self.migrate_legacy_template_path()
+        bind_legacy_style_rules()
 
         # Defer the first resource sync until QGIS has finished building its GUI.
         # This avoids project templates being discovered twice during startup and
@@ -73,7 +81,7 @@ class StyleCore:
         self.main_menu = QMenu(self.tool_button)
 
         settings_action = QAction(
-            tr("Indstillinger..."),
+            tr('Settings...'),
             self.main_menu
         )
 
@@ -84,7 +92,7 @@ class StyleCore:
         self.main_menu.addAction(settings_action)
 
         self.enabled_action = QAction(
-            tr("Automatisk styling"),
+            tr('Automatic styling'),
             self.main_menu
         )
 
@@ -105,7 +113,7 @@ class StyleCore:
         self.main_menu.addAction(self.enabled_action)
 
         # Manual styling is an explicit, per-layer action for older projects.
-        manual_action = QAction(tr("Manuel styleopdatering..."), self.main_menu)
+        manual_action = QAction(tr('Manual Style Update...'), self.main_menu)
         manual_action.triggered.connect(self.manual_styles.show_dialog)
         self.main_menu.addAction(manual_action)
 
@@ -210,7 +218,7 @@ class StyleCore:
             )
         else:
             self.tool_button.setToolTip(
-                tr("StyleCore - automatisk styling deaktiveret")
+                tr('StyleCore - automatic styling disabled')
             )
 
     def sync_resources(self):
@@ -295,78 +303,112 @@ class StyleCore:
                     level=Qgis.Info
                 )
 
+    @staticmethod
+    def _file_sha256(path):
+        digest = hashlib.sha256()
+        with open(path, 'rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+        return digest.hexdigest()
+
     def sync_templates(self):
-        template_source_folder = get_template_folder()
+        """Sync only StyleCore-owned templates, preserving unrelated local files.
 
-        if not template_source_folder:
-            return
-
-        if not os.path.isdir(template_source_folder):
+        A manifest stores the hash of the last file WE copied. We can safely
+        remove obsolete copies only when the content has not been modified by
+        the user. Config switches replace StyleCore-owned files even if the
+        new config's source file is older (mtime must not determine ownership).
+        """
+        source_folder = get_template_folder()
+        if not source_folder or not os.path.isdir(source_folder):
             QgsMessageLog.logMessage(
-                f"Template folder not found: {template_source_folder}",
-                "StyleCore",
-                level=Qgis.Warning
-            )
+                f"Template folder unavailable: {source_folder}",
+                "StyleCore", level=Qgis.Warning)
             return
 
-        # qgisSettingsDirPath() already points to the root of the currently
-        # active QGIS profile. Do not rewrite QGIS3/QGIS4 path components:
-        # custom, migrated or side-by-side profiles may legitimately use
-        # either location.
         profile_path = QgsApplication.qgisSettingsDirPath()
+        local_folder = os.path.join(profile_path, "project_templates")
+        os.makedirs(local_folder, exist_ok=True)
+        settings = QSettings()
+        manifest_key = "StyleCore/managed_template_hashes"
+        try:
+            manifest = json.loads(settings.value(manifest_key, "{}", type=str))
+            if not isinstance(manifest, dict):
+                manifest = {}
+        except (ValueError, TypeError):
+            manifest = {}
 
-        local_template_folder = os.path.join(
-            profile_path,
-            "project_templates"
-        )
+        sources = {
+            filename: os.path.join(source_folder, filename)
+            for filename in os.listdir(source_folder)
+            if filename.lower().endswith((".qgz", ".qgs"))
+            and os.path.isfile(os.path.join(source_folder, filename))
+        }
+        next_manifest = {}
 
-        os.makedirs(
-            local_template_folder,
-            exist_ok=True
-        )
-
-        for filename in os.listdir(template_source_folder):
-
-            if not filename.lower().endswith((".qgz", ".qgs")):
+        # Remove only previously synchronized and unchanged copies, never a
+        # local template or a template edited by the QGIS user.
+        for filename, recorded_hash in manifest.items():
+            if (filename in sources or filename != os.path.basename(filename)
+                    or not filename.lower().endswith((".qgz", ".qgs"))):
                 continue
+            target = os.path.join(local_folder, filename)
+            if os.path.isfile(target):
+                try:
+                    if self._file_sha256(target) == recorded_hash:
+                        os.remove(target)
+                        QgsMessageLog.logMessage(
+                            f"Removed obsolete StyleCore template: {filename}",
+                            "StyleCore", level=Qgis.Info)
+                    else:
+                        QgsMessageLog.logMessage(
+                            f"Preserved locally modified old template: {filename}",
+                            "StyleCore", level=Qgis.Warning)
+                except OSError as exc:
+                    QgsMessageLog.logMessage(
+                        f"Could not remove managed template {filename}: {exc}",
+                        "StyleCore", level=Qgis.Warning)
 
-            source_file = os.path.join(
-                template_source_folder,
-                filename
-            )
-
-            local_file = os.path.join(
-                local_template_folder,
-                filename
-            )
-
-            should_copy = (
-                not os.path.exists(local_file)
-                or os.path.getmtime(source_file)
-                > os.path.getmtime(local_file)
-            )
-
-            if not should_copy:
-                continue
-
+        for filename, source in sources.items():
+            target = os.path.join(local_folder, filename)
             try:
-                shutil.copy2(
-                    source_file,
-                    local_file
-                )
-
+                source_hash = self._file_sha256(source)
+                current_hash = self._file_sha256(target) if os.path.isfile(target) else None
+                if current_hash == source_hash:
+                    next_manifest[filename] = source_hash
+                    continue
+                previous_hash = manifest.get(filename)
+                if current_hash is not None and (not previous_hash or
+                        current_hash != previous_hash):
+                    QgsMessageLog.logMessage(
+                        f"Template name collision (kept existing local file): {filename}. "
+                        "Move/rename it if StyleCore should manage this filename.",
+                        "StyleCore", level=Qgis.Warning)
+                    continue
+                temp_path = None
+                try:
+                    fd, temp_path = tempfile.mkstemp(
+                        prefix='.stylecore_template_', suffix='.tmp', dir=local_folder)
+                    os.close(fd)
+                    shutil.copy2(source, temp_path)
+                    os.replace(temp_path, target)
+                    temp_path = None
+                finally:
+                    if temp_path and os.path.exists(temp_path):
+                        os.remove(temp_path)
+                next_manifest[filename] = source_hash
                 QgsMessageLog.logMessage(
-                    f"Skabelon opdateret: {filename}",
-                    "StyleCore",
-                    level=Qgis.Info
-                )
-
+                    f"Template synchronized: {filename}",
+                    "StyleCore", level=Qgis.Info)
             except Exception as exc:
                 QgsMessageLog.logMessage(
-                    f"Could not update template {filename}: {exc}",
-                    "StyleCore",
-                    level=Qgis.Warning
-                )
+                    f"Could not synchronize template {filename}: {exc}",
+                    "StyleCore", level=Qgis.Warning)
+                if filename in manifest:
+                    next_manifest[filename] = manifest[filename]
+
+        settings.setValue(manifest_key, json.dumps(next_manifest))
+        settings.sync()
 
     def refresh_print_menu(self):
         """Rebuild the print section directly from the configured layout folder."""
@@ -392,7 +434,7 @@ class StyleCore:
 
         if not layouts:
             empty_action = QAction(
-                "    " + tr("Ingen print-layouts fundet"),
+                "    " + tr('No print layouts found'),
                 self.main_menu,
             )
             empty_action.setEnabled(False)
@@ -466,6 +508,12 @@ class StyleCore:
                 "StyleCore",
                 level=Qgis.Info
             )
+            return
+
+        if not load_external_config():
+            QgsMessageLog.logMessage(
+                "Automatic styling skipped: active StyleCore configuration is unavailable.",
+                "StyleCore", level=Qgis.Warning)
             return
 
         # One summary per batch; unmatched layers do not fill the message log.
@@ -606,6 +654,23 @@ class StyleCore:
             level=Qgis.Info
         )
 
+        # The XML title can stay 'DK_VIS' after a user saves a separate old
+        # project. Only the actual template file (or an unsaved new project)
+        # is eligible for template restyling, never a saved project elsewhere.
+        current_file = str(project.fileName() or '').strip()
+        if current_file:
+            allowed_folders = [get_template_folder(), os.path.join(
+                QgsApplication.qgisSettingsDirPath(), 'project_templates')]
+            eligible = any(folder and os.path.normcase(os.path.abspath(
+                os.path.dirname(current_file))) == os.path.normcase(
+                os.path.abspath(folder)) for folder in allowed_folders)
+            if not eligible:
+                QgsMessageLog.logMessage(
+                    'Saved project outside the configured template folders - '
+                    'preserved its styles, regardless of title.',
+                    'StyleCore', level=Qgis.Info)
+                return
+
         matched_name = None
         matched_source = None
         for source, candidate in candidates:
@@ -662,150 +727,71 @@ class StyleCore:
         )
 
     def apply_style(self, layer):
-        settings = QSettings()
+        """Apply local override first, then shared config, then naming fallback.
+
+        A failed/missing personal QML does not disable the shared default.
+        This method is only called for new layers or opted-in templates; it
+        must NOT override saved styles when regular old projects are opened.
+        """
+        if not load_external_config():
+            # The caller logs a single unavailable-config warning per batch.
+            return False
         layer_name = layer.name()
+        style_folder = get_style_folder()
 
-        custom_rules = settings.value(
-            SETTINGS_KEY,
-            [],
-            type=list
-        )
+        file_rule = match_file_suffix_rule(layer.source())
+        file_rule_path = get_file_suffix_style_path(file_rule) if file_rule else None
 
-        for rule in custom_rules:
-            if rule.get("layer", "") == layer_name:
-                custom_style_path = rule.get("style", "")
-
-                if custom_style_path and os.path.exists(
-                    custom_style_path
-                ):
-                    message, success = layer.loadNamedStyle(
-                        custom_style_path
-                    )
-
-                    if success:
-                        layer.triggerRepaint()
-
-                        QgsMessageLog.logMessage(
-                            (
-                                f"User rule applied to "
-                                f"{layer_name}: "
-                                f"{custom_style_path}"
-                            ),
-                            "StyleCore",
-                            level=Qgis.Info
-                        )
-
-                    else:
-                        QgsMessageLog.logMessage(
-                            (
-                                f"Could not load user rule "
-                                f"for {layer_name}: {message}"
-                            ),
-                            "StyleCore",
-                            level=Qgis.Warning
-                        )
-
-                    return success
-
-        standard_style_path = os.path.join(
-            get_style_folder(),
-            f"{layer_name}.qml"
-        )
-        geojson_style_path = None
-        geojson_rule_key = None
-
-        source_path = layer.source().split("|")[0]
-
-        if source_path.casefold().endswith(".geojson"):
-            geojson_name = os.path.splitext(
-                os.path.basename(source_path)
-            )[0]
-
-            for suffix, geojson_rule in get_geojson_suffix_styles().items():
-                if geojson_name.casefold().endswith(suffix.casefold()):
-                    geojson_rule_key = suffix
-                    geojson_style_path = get_geojson_style_path(suffix)
-                    break
-
-        if geojson_rule_key:
-            for custom_rule in custom_rules:
-                if custom_rule.get("layer", "") != geojson_rule_key:
+        # All personal rules take precedence over shared rules. Within each
+        # scope, an exact layer match wins over a file suffix match;
+        # the order never depends on modified
+        # file timestamps. A failing QML falls back to the next choice.
+        candidates = []
+        for scope, rules in (("personal", get_personal_style_rules()),
+                             ("shared", get_style_rules())):
+            for key in (layer_name,):
+                if not key:
                     continue
+                for rule in rules:
+                    if rule['layer'].casefold() == key.casefold():
+                        candidates.append((scope, resolve_style_path(rule['style'])))
+                        break
 
-                custom_geojson_path = custom_rule.get("style", "")
-                if custom_geojson_path and os.path.isfile(custom_geojson_path):
-                    message, success = layer.loadNamedStyle(custom_geojson_path)
+        if file_rule_path:
+            candidates.append(("file suffix", file_rule_path))
 
-                    if success:
-                        layer.triggerRepaint()
-                        QgsMessageLog.logMessage(
-                            (
-                                f"GeoJSON user rule applied to {layer_name}: "
-                                f"{custom_geojson_path}"
-                            ),
-                            "StyleCore",
-                            level=Qgis.Info
-                        )
-                    else:
-                        QgsMessageLog.logMessage(
-                            (
-                                f"Could not load GeoJSON user rule for "
-                                f"{layer_name}: {message}"
-                            ),
-                            "StyleCore",
-                            level=Qgis.Warning
-                        )
+        # Last resort: QML file matching the visible QGIS layer name.
+        fallbacks = []
+        named = os.path.join(style_folder, f"{layer_name}.qml") if style_folder else ""
+        for path in (named,):
+            if path and os.path.isfile(path):
+                fallbacks.append(path)
+        for path in sorted(set(fallbacks), key=os.path.getmtime, reverse=True):
+            candidates.append(("automatic", path))
 
-                    return success
-
-                break
-
-        style_candidates = []
-
-        if os.path.isfile(standard_style_path):
-            style_candidates.append(
-                standard_style_path
-            )
-
-        if geojson_style_path and os.path.isfile(
-            geojson_style_path
-        ):
-            style_candidates.append(
-                geojson_style_path
-            )
-
-        if not style_candidates:
-            return False
-
-        style_path = max(
-            style_candidates,
-            key=os.path.getmtime
-        )
-
-        message, success = layer.loadNamedStyle(
-            style_path
-        )
-
-        if success:
-            layer.triggerRepaint()
-
+        tried = set()
+        for scope, path in candidates:
+            key = os.path.normcase(os.path.normpath(path)) if path else ''
+            if not key or key in tried:
+                continue
+            tried.add(key)
+            if not os.path.isfile(path):
+                if scope != "automatic":
+                    QgsMessageLog.logMessage(
+                        f"{scope.title()} style for {layer_name} not found: {path}",
+                        "StyleCore", level=Qgis.Warning)
+                continue
+            try:
+                message, success = layer.loadNamedStyle(path)
+            except Exception as exc:
+                message, success = str(exc), False
+            if success:
+                layer.triggerRepaint()
+                QgsMessageLog.logMessage(
+                    f"{scope.title()} style applied to {layer_name}: {path}",
+                    "StyleCore", level=Qgis.Info)
+                return True
             QgsMessageLog.logMessage(
-                (
-                    f"Newest style applied to "
-                    f"{layer_name}: {style_path}"
-                ),
-                "StyleCore",
-                level=Qgis.Info
-            )
-            return True
-
-        else:
-            QgsMessageLog.logMessage(
-                (
-                    f"Could not load style "
-                    f"for {layer_name}: {message}"
-                ),
-                "StyleCore",
-                level=Qgis.Warning
-            )
-            return False
+                f"Could not load {scope} style for {layer_name}: {message}",
+                "StyleCore", level=Qgis.Warning)
+        return False

@@ -50,7 +50,7 @@ class StyleCorePrintLayouts:
             QMessageBox.warning(
                 self.iface.mainWindow(),
                 "StyleCore Print",
-                tr(f"Layoutskabelonen blev ikke fundet:\n{template_path}"),
+                tr("The print layout template was not found:") + "\n" + template_path,
             )
             return
 
@@ -68,7 +68,7 @@ class StyleCorePrintLayouts:
             QMessageBox.warning(
                 self.iface.mainWindow(),
                 "StyleCore Print",
-                tr(f"Kunne ikke åbne layoutskabelonen:\n{template_path}"),
+                tr("Could not open the print layout template:") + "\n" + template_path,
             )
             return
 
@@ -82,7 +82,7 @@ class StyleCorePrintLayouts:
             QMessageBox.warning(
                 self.iface.mainWindow(),
                 "StyleCore Print",
-                f"Kunne ikke læse layoutskabelonen:\n{exc}",
+                tr("Could not read the print layout template:") + "\n" + str(exc),
             )
             return
         finally:
@@ -114,7 +114,7 @@ class StyleCorePrintLayouts:
             QMessageBox.warning(
                 self.iface.mainWindow(),
                 "StyleCore Print",
-                tr(f"Kunne ikke tilføje printlayoutet '{layout_name}' til projektet."),
+                tr("Could not add print layout {name} to the project.").format(name=layout_name),
             )
             return
 
@@ -123,7 +123,7 @@ class StyleCorePrintLayouts:
             QMessageBox.warning(
                 self.iface.mainWindow(),
                 "StyleCore Print",
-                tr(f"Printlayoutet '{layout_name}' blev tilføjet, men kunne ikke findes igen."),
+                tr("Print layout {name} was added but could not be found again.").format(name=layout_name),
             )
             return
 
@@ -166,7 +166,7 @@ class StyleCorePrintLayouts:
         if not isinstance(map_item, QgsLayoutItemMap):
             if warn_if_missing:
                 QgsMessageLog.logMessage(
-                    f"Layoutet har ikke et map-item med id '{item_id}'.",
+                    f"The print layout has no map item with ID '{item_id}'.",
                     "StyleCore",
                     level=Qgis.Warning,
                 )

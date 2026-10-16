@@ -1,5 +1,10 @@
-#StyleCore configuration folder
+StyleCore configuration folder
 
-If this folder contains a stylecore_config.json, StyleCore uses this as an default, if no .json file has been previously selected.
+This generic plugin ships WITHOUT any company-specific configuration.
+Use Settings > Options > StyleCore > Configuration > Load configuration
+to select your organisation's shared JSON file once. Its path is remembered
+in your local QGIS profile. Developers can create a new configuration inside
+QGIS and save it on a shared drive.
 
-If another .json file is created or selected, StyleCore will remember this and use it opun next bootup.
+Keep server permissions in place: the developer code is a UI safeguard,
+not a replacement for folder and file write permissions.

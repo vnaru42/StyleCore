@@ -1,12 +1,12 @@
 [general]
 name=StyleCore
 description=Central management of styles, project templates, print layouts and shared configurations in QGIS.
-version=1.7.0
+version=1.8.0
 qgisMinimumVersion=3.44
 qgisMaximumVersion=4.99
 author=Angelo Jensen Dobbs
 icon=stylecore_icon.png
-experimental=True
+experimental=False
 homepage=https://github.com/vnaru42/StyleCore
 repository=https://github.com/vnaru42/StyleCore
 tracker=https://github.com/vnaru42/StyleCore/issues
