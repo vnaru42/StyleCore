@@ -1,8 +1,11 @@
 # StyleCore
 
-**StyleCore 1.8.0** is a QGIS plugin for managing QML layer styles, project templates, and print layouts from a local or shared configuration. It is designed for teams that want consistent QGIS styling without manually applying styles every time a layer is added.
+**StyleCore 1.8.1** is a QGIS plugin for managing QML layer styles, project templates, and print layouts from a local or shared configuration. It is designed for teams that want consistent QGIS styling without manually applying styles every time a layer is added.
 
 **Requirements:** QGIS 3.44 or later (see `metadata.txt` for supported versions). Data sources, external fonts, SVG files, and network shares must be accessible to each user; StyleCore does not install or distribute them automatically.
+
+**Documentation:** https://vnaru42.github.io/StyleCore/  
+**Report a bug:** https://github.com/vnaru42/StyleCore/issues/new
 
 ## Installation
 
@@ -10,6 +13,8 @@
 2. In QGIS, open **Plugins > Manage and Install Plugins > Install from ZIP**.
 3. Select the ZIP and install it.
 4. Open **Settings > Options > StyleCore** to create or load a configuration.
+
+The toolbar dropdown also contains unobtrusive **Help & Documentation** and **Report an Issue** links.
 
 ## Configuration
 

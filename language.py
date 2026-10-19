@@ -87,6 +87,8 @@ _DANISH = {
         'Eksterne QML-stier kan være utilgængelige for kolleger: '
     ),
     'External override:': 'Ekstern override:',
+    'Help & Documentation': 'Hjælp og dokumentation',
+    'Report an Issue': 'Rapportér en fejl',
     'File Suffix Rules': 'Filsuffiksregler',
     'File suffix QML not found: ': 'QML-fil til filsuffiks blev ikke fundet: ',
     'File type': 'Filtype',

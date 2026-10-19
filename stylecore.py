@@ -5,9 +5,9 @@ import hashlib
 import tempfile
 
 from qgis.core import QgsProject, QgsMessageLog, QgsApplication, Qgis
-from qgis.PyQt.QtGui import QFont, QIcon
-from qgis.PyQt.QtWidgets import QAction, QToolButton, QMenu, QListView
-from qgis.PyQt.QtCore import QSettings, QTimer, Qt
+from qgis.PyQt.QtGui import QFont, QIcon, QDesktopServices
+from qgis.PyQt.QtWidgets import QAction, QToolButton, QMenu, QListView, QApplication, QWidgetAction, QPushButton
+from qgis.PyQt.QtCore import QSettings, QTimer, Qt, QUrl, QSize
 
 from .options import StyleCoreOptionsFactory
 from .print_layouts import StyleCorePrintLayouts
@@ -42,6 +42,32 @@ class StyleCore:
         self._project_load_skipped_count = 0
         self._pending_project_identity = []
         self._pending_project_raw_identity = []
+
+    def _add_external_link(self, label, url):
+        """Add a subtle, keyboard-focusable menu item opening a browser link."""
+        action = QWidgetAction(self.main_menu)
+        button = QPushButton(label.replace('&', '&&'), self.main_menu)
+        button.setFlat(True)
+        # Keep link buttons from retaining keyboard focus after the menu closes.
+        button.setFocusPolicy(Qt.NoFocus)
+        button.setCursor(Qt.PointingHandCursor)
+        button.setIcon(QIcon(os.path.join(os.path.dirname(__file__), 'external_link.svg')))
+        button.setIconSize(QSize(12, 12))
+        button.setStyleSheet(
+            'QPushButton { text-align: left; color: #707070; border: 0; '
+            'background: transparent; padding: 3px 8px; }'
+            'QPushButton:hover { background: palette(highlight); '
+            'color: palette(highlighted-text); }'
+        )
+        def open_link():
+            button.clearFocus()
+            self.main_menu.hide()
+            QDesktopServices.openUrl(QUrl(url))
+        button.clicked.connect(open_link)
+        self.main_menu.aboutToHide.connect(button.clearFocus)
+        action.setDefaultWidget(button)
+        self.main_menu.addAction(action)
+        return action
 
     def initGui(self):
         self.register_fonts()
@@ -116,6 +142,19 @@ class StyleCore:
         manual_action = QAction(tr('Manual Style Update...'), self.main_menu)
         manual_action.triggered.connect(self.manual_styles.show_dialog)
         self.main_menu.addAction(manual_action)
+
+        # Two unobtrusive external links below the dynamic print layout list.
+        # QWidgetAction is used only here to give the links a muted text color;
+        # ordinary QMenu/QAction does not support per-action foreground colors.
+        self.help_separator = self.main_menu.addSeparator()
+        self.help_action = self._add_external_link(
+            tr('Help & Documentation'),
+            'https://vnaru42.github.io/StyleCore-Docs/',
+        )
+        self.issue_action = self._add_external_link(
+            tr('Report an Issue'),
+            'https://github.com/vnaru42/StyleCore/issues/new',
+        )
 
         self.print_menu_actions = []
         self.main_menu.aboutToShow.connect(self.refresh_print_menu)
@@ -427,7 +466,7 @@ class StyleCore:
         header_font = QFont(print_header.font())
         header_font.setBold(True)
         print_header.setFont(header_font)
-        self.main_menu.addAction(print_header)
+        self.main_menu.insertAction(self.help_separator, print_header)
         self.print_menu_actions.append(print_header)
 
         layouts = self.print_manager.discover_layouts()
@@ -438,7 +477,7 @@ class StyleCore:
                 self.main_menu,
             )
             empty_action.setEnabled(False)
-            self.main_menu.addAction(empty_action)
+            self.main_menu.insertAction(self.help_separator, empty_action)
             self.print_menu_actions.append(empty_action)
             return
 
@@ -448,7 +487,7 @@ class StyleCore:
                 lambda checked=False, path=template_path:
                     self.print_manager.create_layout_from_template(path)
             )
-            self.main_menu.addAction(action)
+            self.main_menu.insertAction(self.help_separator, action)
             self.print_menu_actions.append(action)
 
     def unload(self):
