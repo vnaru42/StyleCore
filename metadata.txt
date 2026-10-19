@@ -11,3 +11,4 @@ homepage=https://vnaru42.github.io/StyleCore/
 repository=https://github.com/vnaru42/StyleCore
 tracker=https://github.com/vnaru42/StyleCore/issues
 changelog=1.8.1: Added Help & Documentation and Report an Issue links; updated documentation links and translations.
+license=GPL-3.0-or-later
