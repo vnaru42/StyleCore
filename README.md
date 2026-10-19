@@ -4,7 +4,7 @@
 
 **Requirements:** QGIS 3.44 or later (see `metadata.txt` for supported versions). Data sources, external fonts, SVG files, and network shares must be accessible to each user; StyleCore does not install or distribute them automatically.
 
-**Documentation:** https://vnaru42.github.io/StyleCore/  
+**Documentation:** https://vnaru42.github.io/StyleCore-Docs/  
 **Report a bug:** https://github.com/vnaru42/StyleCore/issues/new
 
 ## Installation
