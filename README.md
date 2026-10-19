@@ -106,3 +106,11 @@ Developers can select layers from the current QGIS project and save their stylin
 - **A font or SVG is missing:** Install or provide the referenced asset separately; it is not automatically delivered by StyleCore.
 
 Issues and feedback: https://github.com/vnaru42/StyleCore/issues
+
+## License
+
+Copyright (C) 2026 Angelo Jensen Dobbs
+
+StyleCore is licensed under the GNU General Public License v3.0 or later.
+
+See the [LICENSE](LICENSE) file for the full license text.
