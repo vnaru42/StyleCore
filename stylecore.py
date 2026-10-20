@@ -18,6 +18,7 @@ from .config import (
     match_file_suffix_rule,
     get_file_suffix_style_path,
     get_style_folder,
+    get_root_folder,
     get_template_folder,
     get_restyle_templates,
     get_style_rules,
@@ -42,6 +43,7 @@ class StyleCore:
         self._project_load_skipped_count = 0
         self._pending_project_identity = []
         self._pending_project_raw_identity = []
+        self._registered_font_directories = set()
 
     def _add_external_link(self, label, url):
         """Add a subtle, keyboard-focusable menu item opening a browser link."""
@@ -70,7 +72,6 @@ class StyleCore:
         return action
 
     def initGui(self):
-        self.register_fonts()
         self.migrate_legacy_template_path()
         bind_legacy_style_rules()
 
@@ -200,34 +201,49 @@ class StyleCore:
         )
 
     def register_fonts(self):
-        """Register fonts bundled with StyleCore in the current QGIS session."""
-        font_dir = os.path.join(
-            os.path.dirname(__file__),
-            "fonts"
-        )
+        """Register optional fonts from the active configuration's resource root.
 
+        Font directories are QGIS-session resources: switching configurations
+        does not unregister fonts already loaded from a previous root.
+        """
+        root = get_root_folder()
+        if not root:
+            return
+
+        font_dir = os.path.abspath(os.path.join(root, "fonts"))
         if not os.path.isdir(font_dir):
+            # The optional fonts directory is not required for StyleCore.
+            return
+
+        # Skip empty directories and directories without supported font files.
+        try:
+            filenames = os.listdir(font_dir)
+        except OSError as exc:
             QgsMessageLog.logMessage(
-                f"Font folder not found: {font_dir}",
-                "StyleCore",
-                level=Qgis.Warning
+                f"Cannot inspect StyleCore font directory {font_dir}: {exc}",
+                "StyleCore", level=Qgis.Warning
             )
+            return
+        if not any(name.lower().endswith((".ttf", ".otf")) and
+                   os.path.isfile(os.path.join(font_dir, name))
+                   for name in filenames):
+            return
+
+        normalized_dir = os.path.normcase(os.path.realpath(font_dir))
+        if normalized_dir in self._registered_font_directories:
             return
 
         try:
             QgsApplication.fontManager().addUserFontDirectory(font_dir)
-
+            self._registered_font_directories.add(normalized_dir)
             QgsMessageLog.logMessage(
-                f"StyleCore fonts registered: {font_dir}",
-                "StyleCore",
-                level=Qgis.Info
+                f"StyleCore font directory registered: {font_dir}",
+                "StyleCore", level=Qgis.Info
             )
-
         except Exception as exc:
             QgsMessageLog.logMessage(
-                f"Could not register StyleCore fonts: {exc}",
-                "StyleCore",
-                level=Qgis.Warning
+                f"Could not register StyleCore fonts from {font_dir}: {exc}",
+                "StyleCore", level=Qgis.Warning
             )
 
     def open_settings(self):
@@ -262,6 +278,7 @@ class StyleCore:
 
     def sync_resources(self):
         """Synchronize resources that require local QGIS copies."""
+        self.register_fonts()
         self.sync_templates()
 
         # QGIS' Welcome page maintains its own live template model. On some

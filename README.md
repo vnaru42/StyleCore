@@ -1,10 +1,10 @@
 # StyleCore
 
-**StyleCore 1.8.1** is a QGIS plugin for managing QML layer styles, project templates, and print layouts from a local or shared configuration. It is designed for teams that want consistent QGIS styling without manually applying styles every time a layer is added.
+**StyleCore 1.8.2** is a QGIS plugin for managing QML layer styles, project templates, and print layouts from a local or shared configuration. It is designed for teams that want consistent QGIS styling without manually applying styles every time a layer is added.
 
-**Requirements:** QGIS 3.44 or later (see `metadata.txt` for supported versions). Data sources, external fonts, SVG files, and network shares must be accessible to each user; StyleCore does not install or distribute them automatically.
+**Requirements:** QGIS 3.44 or later (see `metadata.txt` for supported versions). Data sources, SVG files and network shares must be accessible to each user. Optional fonts can be supplied in the active resource root as described below.
 
-**Documentation:** https://vnaru42.github.io/StyleCore-Docs/  
+**Documentation:** https://vnaru42.github.io/StyleCore-Docs/
 **Report a bug:** https://github.com/vnaru42/StyleCore/issues/new
 
 ## Installation
@@ -27,6 +27,7 @@ A configuration can reference:
 - **Print layout templates** (`.qpt`) and supporting SVG graphics.
 - **File Suffix Rules** for exported datasets with predictable filenames.
 - **Selected templates to restyle** when opened.
+- **Fonts from root folder**
 
 The last selected configuration is remembered. Shared resource paths can be relative to the configured root folder; external absolute paths must remain accessible to the users who need them.
 
@@ -37,6 +38,24 @@ The **Developer** section manages the shared root folder, automatic layer style 
 Shared configuration changes are written to the selected JSON file when saved. Colleagues using that JSON receive the updated configuration when they reload it. Keep shared JSON and resource folders in a location accessible to the team.
 
 Developer codes are a user-interface guard, **not a security boundary**. Use filesystem and server permissions to control who can edit shared configuration and style files. Coordinate concurrent developer edits to avoid overwriting someone else's changes.
+
+## Optional fonts folder
+
+StyleCore can make additional fonts available to QGIS from an optional `fonts` directory directly inside the active configuration's **root_folder**:
+
+```text
+StyleCore_resources/
+├── layer_styles/
+├── template_projects/
+├── layouts/
+└── fonts/                  # Optional; create it only if needed
+    ├── Company-Regular.ttf
+    └── Company-Bold.otf
+```
+
+When StyleCore starts or the active configuration is changed, it looks for `root_folder/fonts` and registers that directory with QGIS' font manager. Both `.ttf` and `.otf` files are supported. Missing or empty `fonts` directories are silently ignored; the folder is not automatically created, and no JSON setting or Developer option is required.
+
+Only supply fonts you are legally permitted to share. Ensure colleagues can access and locally synchronize the font files. QGIS may need its text rendering refreshed, or a restart, if fonts are changed while it is running. Previously registered fonts may remain available for the rest of the QGIS session after changing configurations.
 
 ## Automatic layer styling
 
@@ -103,7 +122,8 @@ Developers can select layers from the current QGIS project and save their stylin
 - **A style was not applied:** Check that automatic styling is enabled, the active configuration is correct, the QML exists and is readable, and the source filename matches the rule.
 - **A colleague does not see updates:** Reload the shared configuration and ensure the resource paths are accessible.
 - **A template uses the wrong data:** Confirm that its Oracle, file, WMS, or WFS sources are accessible from that workstation.
-- **A font or SVG is missing:** Install or provide the referenced asset separately; it is not automatically delivered by StyleCore.
+- **A font is missing:** Put licensed `.ttf`/`.otf` files in `root_folder/fonts`, check that the directory is accessible, then reload the configuration or restart QGIS.
+- **An SVG is missing:** Check the external SVG path or the configured layouts directory.
 
 Issues and feedback: https://github.com/vnaru42/StyleCore/issues
 
