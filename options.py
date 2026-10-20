@@ -4,7 +4,7 @@ import shutil
 import tempfile
 import uuid
 
-from qgis.core import QgsProject
+from qgis.core import QgsProject, QgsMessageLog, Qgis
 from qgis.PyQt.QtCore import QSettings, Qt, QEvent, QTimer
 from qgis.PyQt.QtGui import QIcon, QPalette
 from qgis.PyQt.QtWidgets import (
@@ -1667,8 +1667,11 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
                     try:
                         msg, success = layer.loadNamedStyle(path)
                         if success: layer.triggerRepaint()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        QgsMessageLog.logMessage(
+                            f"Could not refresh shared style for {layer.name()}: {exc}",
+                            "StyleCore", level=Qgis.MessageLevel.Warning,
+                        )
 
         settings = QSettings()
         settings.setValue(ENABLED_KEY, self.enabled_checkbox.isChecked())

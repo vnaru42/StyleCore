@@ -58,11 +58,7 @@ class StyleCorePrintLayouts:
         document = QDomDocument()
         template_file = QFile(template_path)
 
-        read_only = (
-            QIODevice.OpenModeFlag.ReadOnly
-            if hasattr(QIODevice, "OpenModeFlag")
-            else QIODevice.ReadOnly
-        )
+        read_only = QIODevice.OpenModeFlag.ReadOnly
 
         if not template_file.open(read_only):
             QMessageBox.warning(
@@ -103,7 +99,7 @@ class StyleCorePrintLayouts:
         QgsMessageLog.logMessage(
             f"QPT loaded: {template_path} ({result})",
             "StyleCore",
-            level=Qgis.Info,
+            level=Qgis.MessageLevel.Info,
         )
 
         self.fit_main_map_to_canvas(layout)
@@ -138,7 +134,7 @@ class StyleCorePrintLayouts:
                 QgsMessageLog.logMessage(
                     f"Move Item Content could not be activated: {exc}",
                     "StyleCore",
-                    level=Qgis.Warning,
+                    level=Qgis.MessageLevel.Warning,
                 )
 
     def unique_layout_name(self, base_name):
@@ -168,7 +164,7 @@ class StyleCorePrintLayouts:
                 QgsMessageLog.logMessage(
                     f"The print layout has no map item with ID '{item_id}'.",
                     "StyleCore",
-                    level=Qgis.Warning,
+                    level=Qgis.MessageLevel.Warning,
                 )
             return
 
@@ -234,5 +230,5 @@ class StyleCorePrintLayouts:
             QgsMessageLog.logMessage(
                 f"Layout-SVG sat: {item_id} -> {svg_path}",
                 "StyleCore",
-                level=Qgis.Info,
+                level=Qgis.MessageLevel.Info,
             )

@@ -173,7 +173,7 @@ class StyleCoreManualStyles:
             project.setDirty(True)
             QgsMessageLog.logMessage(
                 f"Manual style applied to {layer.name()}: {path}",
-                "StyleCore", level=Qgis.Info,
+                "StyleCore", level=Qgis.MessageLevel.Info,
             )
             status.setText(tr('Style applied to this layer. Save the QGIS project to keep it.'))
 

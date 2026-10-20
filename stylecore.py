@@ -51,8 +51,8 @@ class StyleCore:
         button = QPushButton(label.replace('&', '&&'), self.main_menu)
         button.setFlat(True)
         # Keep link buttons from retaining keyboard focus after the menu closes.
-        button.setFocusPolicy(Qt.NoFocus)
-        button.setCursor(Qt.PointingHandCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setIcon(QIcon(os.path.join(os.path.dirname(__file__), 'external_link.svg')))
         button.setIconSize(QSize(12, 12))
         button.setStyleSheet(
@@ -197,7 +197,7 @@ class StyleCore:
         QgsMessageLog.logMessage(
             f"Restored QGIS project template directory: {default_template_folder}",
             "StyleCore",
-            level=Qgis.Info
+            level=Qgis.MessageLevel.Info
         )
 
     def register_fonts(self):
@@ -221,7 +221,7 @@ class StyleCore:
         except OSError as exc:
             QgsMessageLog.logMessage(
                 f"Cannot inspect StyleCore font directory {font_dir}: {exc}",
-                "StyleCore", level=Qgis.Warning
+                "StyleCore", level=Qgis.MessageLevel.Warning
             )
             return
         if not any(name.lower().endswith((".ttf", ".otf")) and
@@ -238,12 +238,12 @@ class StyleCore:
             self._registered_font_directories.add(normalized_dir)
             QgsMessageLog.logMessage(
                 f"StyleCore font directory registered: {font_dir}",
-                "StyleCore", level=Qgis.Info
+                "StyleCore", level=Qgis.MessageLevel.Info
             )
         except Exception as exc:
             QgsMessageLog.logMessage(
                 f"Could not register StyleCore fonts from {font_dir}: {exc}",
-                "StyleCore", level=Qgis.Warning
+                "StyleCore", level=Qgis.MessageLevel.Warning
             )
 
     def open_settings(self):
@@ -312,7 +312,11 @@ class StyleCore:
 
             try:
                 class_name = model.metaObject().className()
-            except Exception:
+            except Exception as exc:
+                QgsMessageLog.logMessage(
+                    f"Could not inspect template model: {exc}",
+                    "StyleCore", level=Qgis.MessageLevel.Warning,
+                )
                 continue
 
             if "TemplateProjectsModel" not in class_name:
@@ -356,7 +360,7 @@ class StyleCore:
                 QgsMessageLog.logMessage(
                     f"Removed {len(duplicate_rows)} duplicate Welcome template entrie(s).",
                     "StyleCore",
-                    level=Qgis.Info
+                    level=Qgis.MessageLevel.Info
                 )
 
     @staticmethod
@@ -379,7 +383,7 @@ class StyleCore:
         if not source_folder or not os.path.isdir(source_folder):
             QgsMessageLog.logMessage(
                 f"Template folder unavailable: {source_folder}",
-                "StyleCore", level=Qgis.Warning)
+                "StyleCore", level=Qgis.MessageLevel.Warning)
             return
 
         profile_path = QgsApplication.qgisSettingsDirPath()
@@ -415,15 +419,15 @@ class StyleCore:
                         os.remove(target)
                         QgsMessageLog.logMessage(
                             f"Removed obsolete StyleCore template: {filename}",
-                            "StyleCore", level=Qgis.Info)
+                            "StyleCore", level=Qgis.MessageLevel.Info)
                     else:
                         QgsMessageLog.logMessage(
                             f"Preserved locally modified old template: {filename}",
-                            "StyleCore", level=Qgis.Warning)
+                            "StyleCore", level=Qgis.MessageLevel.Warning)
                 except OSError as exc:
                     QgsMessageLog.logMessage(
                         f"Could not remove managed template {filename}: {exc}",
-                        "StyleCore", level=Qgis.Warning)
+                        "StyleCore", level=Qgis.MessageLevel.Warning)
 
         for filename, source in sources.items():
             target = os.path.join(local_folder, filename)
@@ -439,7 +443,7 @@ class StyleCore:
                     QgsMessageLog.logMessage(
                         f"Template name collision (kept existing local file): {filename}. "
                         "Move/rename it if StyleCore should manage this filename.",
-                        "StyleCore", level=Qgis.Warning)
+                        "StyleCore", level=Qgis.MessageLevel.Warning)
                     continue
                 temp_path = None
                 try:
@@ -455,11 +459,11 @@ class StyleCore:
                 next_manifest[filename] = source_hash
                 QgsMessageLog.logMessage(
                     f"Template synchronized: {filename}",
-                    "StyleCore", level=Qgis.Info)
+                    "StyleCore", level=Qgis.MessageLevel.Info)
             except Exception as exc:
                 QgsMessageLog.logMessage(
                     f"Could not synchronize template {filename}: {exc}",
-                    "StyleCore", level=Qgis.Warning)
+                    "StyleCore", level=Qgis.MessageLevel.Warning)
                 if filename in manifest:
                     next_manifest[filename] = manifest[filename]
 
@@ -534,7 +538,7 @@ class StyleCore:
             QgsMessageLog.logMessage(
                 "Project loading started - existing project layers will keep their saved styles during load.",
                 "StyleCore",
-                level=Qgis.Info
+                level=Qgis.MessageLevel.Info
             )
         self._project_loading = True
 
@@ -562,14 +566,14 @@ class StyleCore:
             QgsMessageLog.logMessage(
                 f"Automatic styling disabled - {len(layers)} newly added layer(s) left unchanged.",
                 "StyleCore",
-                level=Qgis.Info
+                level=Qgis.MessageLevel.Info
             )
             return
 
         if not load_external_config():
             QgsMessageLog.logMessage(
                 "Automatic styling skipped: active StyleCore configuration is unavailable.",
-                "StyleCore", level=Qgis.Warning)
+                "StyleCore", level=Qgis.MessageLevel.Warning)
             return
 
         # One summary per batch; unmatched layers do not fill the message log.
@@ -577,7 +581,7 @@ class StyleCore:
         QgsMessageLog.logMessage(
             f"Automatic styling - {applied} of {len(layers)} new layer(s) styled.",
             "StyleCore",
-            level=Qgis.Info,
+            level=Qgis.MessageLevel.Info,
         )
 
     def capture_project_identity(self, document):
@@ -604,8 +608,11 @@ class StyleCore:
         for getter_name in ("fileName", "originalPath", "title"):
             try:
                 add_candidate(getter_name, getattr(project, getter_name)())
-            except Exception:
-                pass
+            except Exception as exc:
+                QgsMessageLog.logMessage(
+                    f"Could not read project identity field {getter_name}: {exc}",
+                    "StyleCore", level=Qgis.MessageLevel.Warning,
+                )
 
         try:
             root = document.documentElement()
@@ -619,7 +626,7 @@ class StyleCore:
             QgsMessageLog.logMessage(
                 f"Could not inspect project XML identity: {exc}",
                 "StyleCore",
-                level=Qgis.Warning
+                level=Qgis.MessageLevel.Warning
             )
 
         self._pending_project_identity = candidates
@@ -631,7 +638,7 @@ class StyleCore:
         QgsMessageLog.logMessage(
             f"Project read event - captured identity: {captured}.",
             "StyleCore",
-            level=Qgis.Info
+            level=Qgis.MessageLevel.Info
         )
 
     def _current_project_identity(self):
@@ -669,7 +676,7 @@ class StyleCore:
             QgsMessageLog.logMessage(
                 f"Project load finished - preserved saved styles on {self._project_load_skipped_count} loaded layer(s).",
                 "StyleCore",
-                level=Qgis.Info
+                level=Qgis.MessageLevel.Info
             )
 
         current_candidates, current_raw = self._current_project_identity()
@@ -707,7 +714,7 @@ class StyleCore:
         QgsMessageLog.logMessage(
             f"Project opened - identity check: {identity_text}. Configured restyle templates: {configured or 'none'}.",
             "StyleCore",
-            level=Qgis.Info
+            level=Qgis.MessageLevel.Info
         )
 
         # The XML title can stay 'DK_VIS' after a user saves a separate old
@@ -724,7 +731,7 @@ class StyleCore:
                 QgsMessageLog.logMessage(
                     'Saved project outside the configured template folders - '
                     'preserved its styles, regardless of title.',
-                    'StyleCore', level=Qgis.Info)
+                    'StyleCore', level=Qgis.MessageLevel.Info)
                 return
 
         matched_name = None
@@ -740,14 +747,14 @@ class StyleCore:
             QgsMessageLog.logMessage(
                 "No configured template matched - saved project styles are preserved.",
                 "StyleCore",
-                level=Qgis.Info
+                level=Qgis.MessageLevel.Info
             )
             return
 
         QgsMessageLog.logMessage(
             f"Recognized configured template '{matched_name}' via {matched_source} - template restyling will run.",
             "StyleCore",
-            level=Qgis.Info
+            level=Qgis.MessageLevel.Info
         )
 
         settings = QSettings()
@@ -760,7 +767,7 @@ class StyleCore:
             QgsMessageLog.logMessage(
                 f"Template '{matched_name}' recognized, but automatic styling is disabled - no layers restyled.",
                 "StyleCore",
-                level=Qgis.Info
+                level=Qgis.MessageLevel.Info
             )
             return
 
@@ -768,7 +775,7 @@ class StyleCore:
         QgsMessageLog.logMessage(
             f"Template '{matched_name}' - checking {len(layers)} layer(s) for matching styles.",
             "StyleCore",
-            level=Qgis.Info
+            level=Qgis.MessageLevel.Info
         )
 
         applied = 0
@@ -779,7 +786,7 @@ class StyleCore:
         QgsMessageLog.logMessage(
             f"Template '{matched_name}' restyle finished - {applied} of {len(layers)} layer(s) styled.",
             "StyleCore",
-            level=Qgis.Info
+            level=Qgis.MessageLevel.Info
         )
 
     def apply_style(self, layer):
@@ -835,7 +842,7 @@ class StyleCore:
                 if scope != "automatic":
                     QgsMessageLog.logMessage(
                         f"{scope.title()} style for {layer_name} not found: {path}",
-                        "StyleCore", level=Qgis.Warning)
+                        "StyleCore", level=Qgis.MessageLevel.Warning)
                 continue
             try:
                 message, success = layer.loadNamedStyle(path)
@@ -845,9 +852,9 @@ class StyleCore:
                 layer.triggerRepaint()
                 QgsMessageLog.logMessage(
                     f"{scope.title()} style applied to {layer_name}: {path}",
-                    "StyleCore", level=Qgis.Info)
+                    "StyleCore", level=Qgis.MessageLevel.Info)
                 return True
             QgsMessageLog.logMessage(
                 f"Could not load {scope} style for {layer_name}: {message}",
-                "StyleCore", level=Qgis.Warning)
+                "StyleCore", level=Qgis.MessageLevel.Warning)
         return False
