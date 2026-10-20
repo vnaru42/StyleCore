@@ -129,7 +129,7 @@ class StyleCorePrintLayouts:
             try:
                 # Select the map and open QGIS' native Move Item Content tool.
                 designer.selectItems([main_map])
-                designer.activateTool(QgsLayoutDesignerInterface.ToolMoveItemContent)
+                designer.activateTool(QgsLayoutDesignerInterface.StandardTool.ToolMoveItemContent)
             except (AttributeError, RuntimeError, TypeError) as exc:
                 QgsMessageLog.logMessage(
                     f"Move Item Content could not be activated: {exc}",
