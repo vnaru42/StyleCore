@@ -1,8 +1,8 @@
 # StyleCore
 
-**StyleCore 1.8.2** is a QGIS plugin for managing QML layer styles, project templates, and print layouts from a local or shared configuration. It is designed for teams that want consistent QGIS styling without manually applying styles every time a layer is added.
+**StyleCore 1.9.0** is a QGIS plugin for managing QML layer styles, project templates, and print layouts from a local or shared configuration. It is designed for teams that want consistent QGIS styling without manually applying styles every time a layer is added.
 
-**Requirements:** QGIS 3.44 or later (see `metadata.txt` for supported versions). Data sources, SVG files and network shares must be accessible to each user. Optional fonts can be supplied in the active resource root as described below.
+**Requirements:** QGIS 3.44 (see `metadata.txt` for the official supported version range). Data sources, SVG files and network shares must be accessible to each user. Optional fonts can be supplied in the active resource root as described below.
 
 **Documentation:** https://vnaru42.github.io/StyleCore-Docs/
 **Report a bug:** https://github.com/vnaru42/StyleCore/issues/new
@@ -18,7 +18,7 @@ The toolbar dropdown also contains unobtrusive **Help & Documentation** and **Re
 
 ## Configuration
 
-StyleCore uses a JSON configuration file to locate shared or local resources. Use **New configuration** to create a configuration and resource folders, or **Load configuration** to select an existing JSON file (including one on a UNC network path).
+StyleCore uses a JSON configuration file to locate shared or local resources. Use **New configuration** to create a configuration and resource folders, or **Load configuration** to select an existing JSON file (including one on a UNC network path). When creating a configuration, choose the **Configuration file** location directly in the dialog.
 
 A configuration can reference:
 
@@ -29,15 +29,19 @@ A configuration can reference:
 - **Selected templates to restyle** when opened.
 - **Fonts from root folder**
 
-The last selected configuration is remembered. Shared resource paths can be relative to the configured root folder; external absolute paths must remain accessible to the users who need them.
+### Resource root location
+
+By default, **Use configuration file folder as resource root** makes the folder containing the JSON file the resource root (`root_mode: "config_dir"`). Moving the JSON file together with its resource folders lets users reconnect by loading the JSON from its new location.
+
+Uncheck this option to choose a separate root folder (`root_mode: "custom"`). Shared resource paths can be relative to the active root; external absolute paths must still be accessible. The last selected configuration is remembered.
 
 ### Shared configurations and developer settings
 
-The **Developer** section manages the shared root folder, automatic layer style mappings, File Suffix Rules, and template refresh settings. Authorized developers can also save selected QGIS layer styles as QML files in the configured shared style location.
+The **Developer** section manages the shared root folder, automatic layer style mappings, File Suffix Rules, and template refresh settings. A `...` browse control in shared automatic style mappings lets developers select QML files directly. Authorized developers can also save selected QGIS layer styles as QML files in the configured shared style location.
 
 Shared configuration changes are written to the selected JSON file when saved. Colleagues using that JSON receive the updated configuration when they reload it. Keep shared JSON and resource folders in a location accessible to the team.
 
-Developer codes are a user-interface guard, **not a security boundary**. Use filesystem and server permissions to control who can edit shared configuration and style files. Coordinate concurrent developer edits to avoid overwriting someone else's changes.
+Developer codes are a user-interface guard, **not a security boundary**. Use filesystem and server permissions to control who can edit shared configuration and style files. StyleCore checks for changes made to the shared configuration by another editor and can reject a conflicting save; reload the configuration before trying again.
 
 ## Optional fonts folder
 
@@ -66,7 +70,7 @@ When automatic styling is enabled and a new layer is added, StyleCore looks for 
 - A **File Suffix Rule** based on the source filename and extension.
 - A **QML named after the QGIS layer**, as a fallback.
 
-If no usable QML is found, the existing layer style is left unchanged. You can disable automatic styling in StyleCore settings.
+If no usable QML is found, the existing layer style is left unchanged. You can switch **Automatic Styling** on or off from the StyleCore dropdown; its status is shown in the menu. Switching it off does not restyle layers already loaded.
 
 ### File Suffix Rules
 
@@ -92,9 +96,9 @@ An individual override can be removed to return to shared styling, or all person
 
 ## Project templates
 
-StyleCore synchronizes configured project templates into QGIS' standard template location so they can be used from the QGIS new-project/template workflow.
+StyleCore opens `.qgs` and `.qgz` project templates **directly from the configured templates folder**, including its subfolders, using the StyleCore **New from Template** menu. It does not copy these templates into QGIS' standard local `project_templates` directory.
 
-Developers can select which templates have their existing layers checked for updated QML styles when those templates are opened. The refresh is intended for recognized templates, **not unrelated existing saved projects**.
+Each template can be marked **Active** to appear in the template menu and **Refresh** to check its layers for updated QML styling when opened. Refresh only applies to selected templates, **not unrelated existing saved projects**. Templates should use portable data source paths where possible; the referenced files and services must be accessible to users.
 
 ## Print layouts
 
@@ -121,6 +125,9 @@ Developers can select layers from the current QGIS project and save their stylin
 
 - **A style was not applied:** Check that automatic styling is enabled, the active configuration is correct, the QML exists and is readable, and the source filename matches the rule.
 - **A colleague does not see updates:** Reload the shared configuration and ensure the resource paths are accessible.
+- **The configured JSON file cannot be found:** StyleCore warns when a previously selected configuration is missing. Open Settings and select the correct JSON file.
+- **An older configuration has an absolute root path:** It remains supported. To make the configuration portable, back up the JSON and select the configuration-file folder as resource root; keep its resource folders together and review any absolute paths within the configuration.
+- **A template is missing from the menu:** Check its **Active** setting and that the `.qgs`/`.qgz` file is in the configured templates folder.
 - **A template uses the wrong data:** Confirm that its Oracle, file, WMS, or WFS sources are accessible from that workstation.
 - **A font is missing:** Put licensed `.ttf`/`.otf` files in `root_folder/fonts`, check that the directory is accessible, then reload the configuration or restart QGIS.
 - **An SVG is missing:** Check the external SVG path or the configured layouts directory.

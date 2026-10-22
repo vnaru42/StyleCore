@@ -32,8 +32,17 @@ class StyleCorePrintLayouts:
         if not folder or not os.path.isdir(folder):
             return []
 
+        try:
+            filenames = sorted(os.listdir(folder), key=str.casefold)
+        except OSError as exc:
+            QgsMessageLog.logMessage(
+                f"Could not read the shared print layout folder {folder}: {exc}",
+                'StyleCore', level=Qgis.MessageLevel.Warning,
+            )
+            return []
+
         layouts = []
-        for filename in sorted(os.listdir(folder), key=str.casefold):
+        for filename in filenames:
             if filename.lower().endswith(".qpt"):
                 layouts.append(
                     (
@@ -89,7 +98,17 @@ class StyleCorePrintLayouts:
         layout.initializeDefaults()
 
         context = QgsReadWriteContext()
-        result = layout.loadFromTemplate(document, context)
+        try:
+            result = layout.loadFromTemplate(document, context)
+            # PyQGIS 3.44/4.x returns (loaded_items, success).
+            if isinstance(result, tuple) and not result[1]:
+                raise ValueError('The QPT layout could not be loaded.')
+        except Exception as exc:
+            QMessageBox.warning(
+                self.iface.mainWindow(), 'StyleCore Print',
+                tr('Could not read the print layout template:') + '\n' + str(exc),
+            )
+            return
 
         layout_name = self.unique_layout_name(
             os.path.splitext(os.path.basename(template_path))[0]
@@ -214,7 +233,16 @@ class StyleCorePrintLayouts:
         if not os.path.isdir(svg_folder):
             return
 
-        for filename in os.listdir(svg_folder):
+        try:
+            svg_files = os.listdir(svg_folder)
+        except OSError as exc:
+            QgsMessageLog.logMessage(
+                f"Could not read the shared layout SVG folder {svg_folder}: {exc}",
+                'StyleCore', level=Qgis.MessageLevel.Warning,
+            )
+            return
+
+        for filename in svg_files:
             if not filename.lower().endswith(".svg"):
                 continue
 

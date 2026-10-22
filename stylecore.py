@@ -1,12 +1,10 @@
 import os
-import shutil
 import json
 import hashlib
-import tempfile
 
 from qgis.core import QgsProject, QgsMessageLog, QgsApplication, Qgis
-from qgis.PyQt.QtGui import QFont, QIcon, QDesktopServices
-from qgis.PyQt.QtWidgets import QAction, QToolButton, QMenu, QListView, QApplication, QWidgetAction, QPushButton
+from qgis.PyQt.QtGui import QIcon, QDesktopServices, QPalette
+from qgis.PyQt.QtWidgets import QAction, QToolButton, QMenu, QWidgetAction, QPushButton
 from qgis.PyQt.QtCore import QSettings, QTimer, Qt, QUrl, QSize
 
 from .options import StyleCoreOptionsFactory
@@ -15,12 +13,14 @@ from .manual_styles import StyleCoreManualStyles
 from .language import tr
 from .config import (
     ENABLED_KEY,
+    CONFIG_FILE_KEY,
     match_file_suffix_rule,
     get_file_suffix_style_path,
     get_style_folder,
     get_root_folder,
-    get_template_folder,
+    list_project_templates,
     get_restyle_templates,
+    get_inactive_templates,
     get_style_rules,
     load_external_config,
     get_personal_style_rules,
@@ -41,8 +41,6 @@ class StyleCore:
         self.main_menu = None
         self._project_loading = False
         self._project_load_skipped_count = 0
-        self._pending_project_identity = []
-        self._pending_project_raw_identity = []
         self._registered_font_directories = set()
 
     def _add_external_link(self, label, url):
@@ -71,26 +69,39 @@ class StyleCore:
         self.main_menu.addAction(action)
         return action
 
+    def _update_menu_icons(self):
+        """Use a readable monochrome icon set in light and dark QGIS themes."""
+        if not self.main_menu:
+            return
+        menu_color = self.main_menu.palette().color(QPalette.ColorRole.Window)
+        variant = 'dark' if menu_color.lightness() < 128 else 'light'
+        icon_folder = os.path.join(os.path.dirname(__file__), 'menu_icons')
+        for action, icon_name in (
+            (self.settings_action, 'settings'),
+            (self.enabled_action, 'automatic'),
+            (self.manual_action, 'manual'),
+            (self.templates_menu.menuAction(), 'template'),
+            (self.print_menu.menuAction(), 'print'),
+        ):
+            action.setIcon(QIcon(os.path.join(icon_folder, f'{icon_name}_{variant}.svg')))
+
     def initGui(self):
-        self.migrate_legacy_template_path()
         bind_legacy_style_rules()
 
-        # Defer the first resource sync until QGIS has finished building its GUI.
-        # This avoids project templates being discovered twice during startup and
-        # also makes resources available after a first-time plugin installation
-        # without requiring a QGIS restart.
-        QTimer.singleShot(250, self.sync_resources)
+        # Register configured fonts after QGIS initializes; do not synchronize templates.
+        QTimer.singleShot(250, self.register_fonts)
+        QTimer.singleShot(500, self.cleanup_legacy_template_copies)
+        QTimer.singleShot(900, self.warn_missing_configuration)
 
         project = QgsProject.instance()
         project.layersAdded.connect(self.layers_added)
         project.loadingLayer.connect(self.project_loading_started)
         project.layerLoaded.connect(self.project_layer_loaded)
-        project.readProject.connect(self.capture_project_identity)
         self.iface.projectRead.connect(self.project_read_complete)
 
         self.options_factory = StyleCoreOptionsFactory(
             enabled_changed_callback=self.set_auto_enabled,
-            root_folder_changed_callback=self.sync_resources,
+            root_folder_changed_callback=self.register_fonts,
         )
 
         self.iface.registerOptionsWidgetFactory(self.options_factory)
@@ -106,47 +117,47 @@ class StyleCore:
             QToolButton.ToolButtonPopupMode.InstantPopup
         )
         self.main_menu = QMenu(self.tool_button)
-
-        settings_action = QAction(
-            tr('Settings...'),
-            self.main_menu
+        self.main_menu.setMinimumWidth(290)
+        # Slightly roomier sections, without a fixed light/dark menu background.
+        # Native Qt selection, text and disabled colors follow the QGIS theme.
+        self.main_menu.setStyleSheet(
+            'QMenu { padding: 4px 0; }'
+            'QMenu::item { padding: 4px 26px 4px 12px; }'
+            # Move action icons away from the left edge and towards labels;
+            # keep item text, separators, and submenus in their existing positions.
+            'QMenu::icon { margin-left: 9px; }'
+            'QMenu::item:selected { background: palette(highlight); '
+            'color: palette(highlighted-text); }'
+            'QMenu::separator { height: 1px; '
+            'background: rgba(128, 128, 128, 65); margin: 5px 12px; }'
         )
 
-        settings_action.triggered.connect(
-            self.open_settings
-        )
+        self.settings_action = QAction(tr('Settings...'), self.main_menu)
+        self.settings_action.triggered.connect(self.open_settings)
+        self.main_menu.addAction(self.settings_action)
+        self.main_menu.addSeparator()
 
-        self.main_menu.addAction(settings_action)
-
-        self.enabled_action = QAction(
-            tr('Automatic styling'),
-            self.main_menu
-        )
-
+        enabled = QSettings().value(ENABLED_KEY, True, type=bool)
+        self.enabled_action = QAction(self._auto_action_text(enabled), self.main_menu)
         self.enabled_action.setCheckable(True)
-
-        enabled = QSettings().value(
-            ENABLED_KEY,
-            True,
-            type=bool
-        )
-
         self.enabled_action.setChecked(enabled)
-
-        self.enabled_action.toggled.connect(
-            self.set_auto_enabled
-        )
-
+        self.enabled_action.toggled.connect(self.set_auto_enabled)
         self.main_menu.addAction(self.enabled_action)
 
-        # Manual styling is an explicit, per-layer action for older projects.
-        manual_action = QAction(tr('Manual Style Update...'), self.main_menu)
-        manual_action.triggered.connect(self.manual_styles.show_dialog)
-        self.main_menu.addAction(manual_action)
+        self.manual_action = QAction(tr('Manual Style Update...'), self.main_menu)
+        self.manual_action.triggered.connect(self.manual_styles.show_dialog)
+        self.main_menu.addAction(self.manual_action)
+        self.main_menu.addSeparator()
 
-        # Two unobtrusive external links below the dynamic print layout list.
-        # QWidgetAction is used only here to give the links a muted text color;
-        # ordinary QMenu/QAction does not support per-action foreground colors.
+        # Build resource lists only when the submenu opens.
+        self.templates_menu = QMenu(tr('New from Template'), self.main_menu)
+        self.templates_menu.aboutToShow.connect(self.refresh_templates_menu)
+        self.main_menu.addMenu(self.templates_menu)
+
+        self.print_menu = QMenu(tr('Print Layouts'), self.main_menu)
+        self.print_menu.aboutToShow.connect(self.refresh_print_menu)
+        self.main_menu.addMenu(self.print_menu)
+
         self.help_separator = self.main_menu.addSeparator()
         self.help_action = self._add_external_link(
             tr('Help & Documentation'),
@@ -157,48 +168,19 @@ class StyleCore:
             'https://github.com/vnaru42/StyleCore/issues/new',
         )
 
-        self.print_menu_actions = []
-        self.main_menu.aboutToShow.connect(self.refresh_print_menu)
+        # Refresh icon contrast when the QGIS theme changes.
+        self.main_menu.aboutToShow.connect(self._update_menu_icons)
+        self._update_menu_icons()
 
         self.tool_button.setMenu(self.main_menu)
+        self.tool_button.setToolTip(
+            'StyleCore' if enabled else tr('StyleCore - automatic styling disabled')
+        )
 
         self.action = self.iface.addToolBarWidget(
             self.tool_button
         )
 
-
-    def migrate_legacy_template_path(self):
-        """Undo the temporary StyleCore template-path experiment from pre-1.5.1 tests."""
-        settings = QSettings()
-        configured = settings.value("qgis/projectTemplateDir", "", type=str) or ""
-
-        if not configured:
-            return
-
-        normalized = os.path.normpath(configured)
-        if os.path.basename(normalized).casefold() != "stylecore_project_templates":
-            return
-
-        profile_path = QgsApplication.qgisSettingsDirPath()
-        default_template_folder = os.path.normpath(
-            os.path.join(profile_path, "project_templates")
-        )
-
-        settings.setValue("qgis/projectTemplateDir", default_template_folder)
-        settings.sync()
-
-        # Remove only the obsolete empty folder created by the old test build.
-        try:
-            if os.path.isdir(normalized) and not os.listdir(normalized):
-                os.rmdir(normalized)
-        except OSError:
-            pass
-
-        QgsMessageLog.logMessage(
-            f"Restored QGIS project template directory: {default_template_folder}",
-            "StyleCore",
-            level=Qgis.MessageLevel.Info
-        )
 
     def register_fonts(self):
         """Register optional fonts from the active configuration's resource root.
@@ -246,11 +228,23 @@ class StyleCore:
                 "StyleCore", level=Qgis.MessageLevel.Warning
             )
 
+    def warn_missing_configuration(self):
+        """Warn only for a previously selected JSON that is no longer accessible."""
+        selected = QSettings().value(CONFIG_FILE_KEY, '', type=str).strip()
+        if selected and not os.path.isfile(selected):
+            self.iface.messageBar().pushWarning(
+                'StyleCore',
+                tr('Configuration file not found. Open Settings to select another configuration: ') + selected,
+            )
+
     def open_settings(self):
         self.iface.showOptionsDialog(
             self.iface.mainWindow(),
             currentPage="StyleCore"
         )
+
+    def _auto_action_text(self, enabled):
+        return f"{tr('Automatic styling')}\t{'✔' if enabled else '✕'}"
 
     def set_auto_enabled(self, enabled):
         settings = QSettings()
@@ -264,6 +258,7 @@ class StyleCore:
         if self.enabled_action:
             self.enabled_action.blockSignals(True)
             self.enabled_action.setChecked(enabled)
+            self.enabled_action.setText(self._auto_action_text(enabled))
             self.enabled_action.blockSignals(False)
 
 
@@ -276,247 +271,154 @@ class StyleCore:
                 tr('StyleCore - automatic styling disabled')
             )
 
-    def sync_resources(self):
-        """Synchronize resources that require local QGIS copies."""
-        self.register_fonts()
-        self.sync_templates()
-
-        # QGIS' Welcome page maintains its own live template model. On some
-        # installations the same physical template can temporarily be inserted
-        # more than once when the watched project_templates directory changes.
-        # Clean only duplicate rows belonging to templates managed by StyleCore.
-        QTimer.singleShot(300, self.cleanup_welcome_template_duplicates)
-        QTimer.singleShot(1200, self.cleanup_welcome_template_duplicates)
-
-    def cleanup_welcome_template_duplicates(self):
-        """Remove duplicate StyleCore template rows from QGIS' Welcome model."""
-        template_source_folder = get_template_folder()
-        if not template_source_folder or not os.path.isdir(template_source_folder):
-            return
-
-        managed_names = {
-            os.path.splitext(filename)[0].casefold()
-            for filename in os.listdir(template_source_folder)
-            if filename.lower().endswith((".qgz", ".qgs"))
-        }
-
-        if not managed_names:
-            return
-
-        main_window = self.iface.mainWindow()
-
-        for view in main_window.findChildren(QListView):
-            model = view.model()
-            if model is None:
-                continue
-
-            try:
-                class_name = model.metaObject().className()
-            except Exception as exc:
-                QgsMessageLog.logMessage(
-                    f"Could not inspect template model: {exc}",
-                    "StyleCore", level=Qgis.MessageLevel.Warning,
-                )
-                continue
-
-            if "TemplateProjectsModel" not in class_name:
-                continue
-
-            seen = set()
-            duplicate_rows = []
-
-            for row in range(model.rowCount()):
-                index = model.index(row, 0)
-
-                # The delegate title is stored in a custom role, while the
-                # QStandardItem display value normally contains the filename.
-                # Read a small range of roles so this remains tolerant across
-                # supported QGIS versions.
-                values = []
-                for role in range(int(Qt.ItemDataRole.DisplayRole), int(Qt.ItemDataRole.UserRole) + 32):
-                    value = index.data(role)
-                    if value is not None and value != "":
-                        values.append(str(value))
-
-                managed_name = None
-                for value in values:
-                    base = os.path.splitext(os.path.basename(value))[0].casefold()
-                    if base in managed_names:
-                        managed_name = base
-                        break
-
-                if managed_name is None:
-                    continue
-
-                if managed_name in seen:
-                    duplicate_rows.append(row)
-                else:
-                    seen.add(managed_name)
-
-            for row in reversed(duplicate_rows):
-                model.removeRow(row)
-
-            if duplicate_rows:
-                QgsMessageLog.logMessage(
-                    f"Removed {len(duplicate_rows)} duplicate Welcome template entrie(s).",
-                    "StyleCore",
-                    level=Qgis.MessageLevel.Info
-                )
-
     @staticmethod
     def _file_sha256(path):
+        """Used only for one-time, safe migration of old synchronized copies."""
         digest = hashlib.sha256()
         with open(path, 'rb') as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b''):
                 digest.update(chunk)
         return digest.hexdigest()
 
-    def sync_templates(self):
-        """Sync only StyleCore-owned templates, preserving unrelated local files.
+    def cleanup_legacy_template_copies(self):
+        """One-time migration; never remove arbitrary QGIS user templates.
 
-        A manifest stores the hash of the last file WE copied. We can safely
-        remove obsolete copies only when the content has not been modified by
-        the user. Config switches replace StyleCore-owned files even if the
-        new config's source file is older (mtime must not determine ownership).
+        Only copies recorded as managed by the old StyleCore sync, with an
+        unchanged matching hash, are removed. Modified copies are retained.
+        After migration, no project template is ever copied locally again.
         """
-        source_folder = get_template_folder()
-        if not source_folder or not os.path.isdir(source_folder):
-            QgsMessageLog.logMessage(
-                f"Template folder unavailable: {source_folder}",
-                "StyleCore", level=Qgis.MessageLevel.Warning)
-            return
-
-        profile_path = QgsApplication.qgisSettingsDirPath()
-        local_folder = os.path.join(profile_path, "project_templates")
-        os.makedirs(local_folder, exist_ok=True)
         settings = QSettings()
-        manifest_key = "StyleCore/managed_template_hashes"
+        key = 'StyleCore/managed_template_hashes'
         try:
-            manifest = json.loads(settings.value(manifest_key, "{}", type=str))
-            if not isinstance(manifest, dict):
-                manifest = {}
-        except (ValueError, TypeError):
+            manifest = json.loads(settings.value(key, '{}', type=str))
+        except (TypeError, ValueError):
             manifest = {}
-
-        sources = {
-            filename: os.path.join(source_folder, filename)
-            for filename in os.listdir(source_folder)
-            if filename.lower().endswith((".qgz", ".qgs"))
-            and os.path.isfile(os.path.join(source_folder, filename))
-        }
-        next_manifest = {}
-
-        # Remove only previously synchronized and unchanged copies, never a
-        # local template or a template edited by the QGIS user.
-        for filename, recorded_hash in manifest.items():
-            if (filename in sources or filename != os.path.basename(filename)
-                    or not filename.lower().endswith((".qgz", ".qgs"))):
+        if not isinstance(manifest, dict):
+            manifest = {}
+        folder = os.path.join(QgsApplication.qgisSettingsDirPath(), 'project_templates')
+        remaining = {}
+        removed = 0
+        for filename, expected_hash in manifest.items():
+            if (filename != os.path.basename(filename)
+                    or not filename.lower().endswith(('.qgz', '.qgs'))
+                    or not isinstance(expected_hash, str)):
                 continue
-            target = os.path.join(local_folder, filename)
-            if os.path.isfile(target):
-                try:
-                    if self._file_sha256(target) == recorded_hash:
-                        os.remove(target)
-                        QgsMessageLog.logMessage(
-                            f"Removed obsolete StyleCore template: {filename}",
-                            "StyleCore", level=Qgis.MessageLevel.Info)
-                    else:
-                        QgsMessageLog.logMessage(
-                            f"Preserved locally modified old template: {filename}",
-                            "StyleCore", level=Qgis.MessageLevel.Warning)
-                except OSError as exc:
-                    QgsMessageLog.logMessage(
-                        f"Could not remove managed template {filename}: {exc}",
-                        "StyleCore", level=Qgis.MessageLevel.Warning)
-
-        for filename, source in sources.items():
-            target = os.path.join(local_folder, filename)
+            target = os.path.join(folder, filename)
             try:
-                source_hash = self._file_sha256(source)
-                current_hash = self._file_sha256(target) if os.path.isfile(target) else None
-                if current_hash == source_hash:
-                    next_manifest[filename] = source_hash
-                    continue
-                previous_hash = manifest.get(filename)
-                if current_hash is not None and (not previous_hash or
-                        current_hash != previous_hash):
-                    QgsMessageLog.logMessage(
-                        f"Template name collision (kept existing local file): {filename}. "
-                        "Move/rename it if StyleCore should manage this filename.",
-                        "StyleCore", level=Qgis.MessageLevel.Warning)
-                    continue
-                temp_path = None
-                try:
-                    fd, temp_path = tempfile.mkstemp(
-                        prefix='.stylecore_template_', suffix='.tmp', dir=local_folder)
-                    os.close(fd)
-                    shutil.copy2(source, temp_path)
-                    os.replace(temp_path, target)
-                    temp_path = None
-                finally:
-                    if temp_path and os.path.exists(temp_path):
-                        os.remove(temp_path)
-                next_manifest[filename] = source_hash
-                QgsMessageLog.logMessage(
-                    f"Template synchronized: {filename}",
-                    "StyleCore", level=Qgis.MessageLevel.Info)
-            except Exception as exc:
-                QgsMessageLog.logMessage(
-                    f"Could not synchronize template {filename}: {exc}",
-                    "StyleCore", level=Qgis.MessageLevel.Warning)
-                if filename in manifest:
-                    next_manifest[filename] = manifest[filename]
+                if os.path.isfile(target):
+                    if self._file_sha256(target) == expected_hash:
+                        os.remove(target)
+                        removed += 1
+                    else:
+                        remaining[filename] = expected_hash
+            except OSError:
+                remaining[filename] = expected_hash
+        if removed:
+            QgsMessageLog.logMessage(
+                f"Removed {removed} unchanged legacy template copies. "
+                "QGIS may need a restart to refresh its Welcome screen.",
+                'StyleCore', level=Qgis.MessageLevel.Info)
+        if manifest:
+            settings.setValue(key, json.dumps(remaining))
 
-        settings.setValue(manifest_key, json.dumps(next_manifest))
+        # Undo only StyleCore's historical QGIS template-folder override,
+        # without modifying any other user-chosen QGIS template directory.
+        old = settings.value('qgis/projectTemplateDir', '', type=str) or ''
+        if os.path.basename(os.path.normpath(old)).casefold() == 'stylecore_project_templates':
+            original = os.path.normpath(os.path.join(
+                QgsApplication.qgisSettingsDirPath(), 'project_templates'))
+            settings.setValue('qgis/projectTemplateDir', original)
         settings.sync()
 
-    def refresh_print_menu(self):
-        """Rebuild the print section directly from the configured layout folder."""
-
-        if not self.main_menu:
+    def refresh_templates_menu(self):
+        """Re-read templates recursively from their original sources on open."""
+        self.templates_menu.clear()
+        inactive = {name.casefold() for name in get_inactive_templates()}
+        entries = [entry for entry in list_project_templates()
+                   if entry['key'].casefold() not in inactive]
+        if not entries:
+            placeholder = self.templates_menu.addAction('No active project templates')
+            placeholder.setEnabled(False)
             return
+        # Two sources may have the same visible name; show their relative
+        # location instead of an ambiguous duplicate menu action.
+        label_counts = {}
+        for entry in entries:
+            label_counts[entry['label'].casefold()] = label_counts.get(entry['label'].casefold(), 0) + 1
+        for entry in entries:
+            path, key = entry['path'], entry['key']
+            label = entry['label']
+            if label_counts[label.casefold()] > 1:
+                # Never show internal config namespaces such as @external in
+                # the user-facing menu; use the source folder for clarity.
+                label += ' [' + os.path.basename(os.path.dirname(path)) + ']'
+            action = self.templates_menu.addAction(label)
+            action.setToolTip(path)
+            if not os.path.isfile(path):
+                action.setEnabled(False)
+                action.setToolTip('File not found: ' + path)
+            else:
+                action.triggered.connect(
+                    lambda checked=False, p=path, n=key: self.open_project_template(p, n))
 
-        for action in self.print_menu_actions:
-            self.main_menu.removeAction(action)
-            action.deleteLater()
-
-        self.print_menu_actions = []
-
-        print_header = QAction("PRINT", self.main_menu)
-        print_header.setEnabled(False)
-        header_font = QFont(print_header.font())
-        header_font.setBold(True)
-        print_header.setFont(header_font)
-        self.main_menu.insertAction(self.help_separator, print_header)
-        self.print_menu_actions.append(print_header)
-
-        layouts = self.print_manager.discover_layouts()
-
-        if not layouts:
-            empty_action = QAction(
-                "    " + tr('No print layouts found'),
-                self.main_menu,
+    def open_project_template(self, path, template_name):
+        """Read from the original path and force Save As for the new project."""
+        if not os.path.isfile(path):
+            self.iface.messageBar().pushWarning('StyleCore', 'Template not found: ' + path)
+            return
+        if not self.iface.newProject(True):
+            return
+        try:
+            if not self.iface.addProject(path):
+                self.iface.messageBar().pushWarning('StyleCore', 'Could not load template: ' + path)
+                return
+            project = QgsProject.instance()
+            # Styles from a saved working project are never overwritten.
+            # Only this explicit menu action can trigger template refresh.
+            if (template_name.casefold() in {n.casefold() for n in get_restyle_templates()}
+                    and QSettings().value(ENABLED_KEY, True, type=bool)):
+                applied = sum(bool(self.apply_style(layer)) for layer in project.mapLayers().values())
+                QgsMessageLog.logMessage(
+                    f"Template '{template_name}': refreshed {applied} layer styles.",
+                    'StyleCore', level=Qgis.MessageLevel.Info)
+            # Do not accidentally overwrite the shared original template.
+            project.setFileName('')
+            mode = str(load_external_config().get('save_paths', 'relative')).lower()
+            project.setFilePathStorage(
+                Qgis.FilePathType.Absolute if mode == 'absolute'
+                else Qgis.FilePathType.Relative
             )
-            empty_action.setEnabled(False)
-            self.main_menu.insertAction(self.help_separator, empty_action)
-            self.print_menu_actions.append(empty_action)
+            project.setDirty(True)
+            QgsMessageLog.logMessage(
+                f"Opened original template (unsaved copy): {path}",
+                'StyleCore', level=Qgis.MessageLevel.Info)
+        except Exception as exc:
+            self.iface.messageBar().pushWarning('StyleCore', 'Template open failed: ' + str(exc))
+
+    def refresh_print_menu(self):
+        """Populate the Print Layouts submenu directly from shared QPT files."""
+        if not self.print_menu:
+            return
+        self.print_menu.clear()
+        layouts = self.print_manager.discover_layouts()
+        if not layouts:
+            empty = self.print_menu.addAction(tr('No print layouts found'))
+            empty.setEnabled(False)
             return
 
         for layout_name, template_path in layouts:
-            action = QAction(f"    {layout_name}", self.main_menu)
+            action = self.print_menu.addAction(layout_name)
+            action.setToolTip(template_path)
             action.triggered.connect(
                 lambda checked=False, path=template_path:
                     self.print_manager.create_layout_from_template(path)
             )
-            self.main_menu.insertAction(self.help_separator, action)
-            self.print_menu_actions.append(action)
 
     def unload(self):
         project = QgsProject.instance()
         project.layersAdded.disconnect(self.layers_added)
         project.loadingLayer.disconnect(self.project_loading_started)
         project.layerLoaded.disconnect(self.project_layer_loaded)
-        project.readProject.disconnect(self.capture_project_identity)
         self.iface.projectRead.disconnect(self.project_read_complete)
 
         if self.options_factory:
@@ -533,8 +435,6 @@ class StyleCore:
         """Mark layers emitted while a saved project/template is being read."""
         if not self._project_loading:
             self._project_load_skipped_count = 0
-            self._pending_project_identity = []
-            self._pending_project_raw_identity = []
             QgsMessageLog.logMessage(
                 "Project loading started - existing project layers will keep their saved styles during load.",
                 "StyleCore",
@@ -584,210 +484,14 @@ class StyleCore:
             level=Qgis.MessageLevel.Info,
         )
 
-    def capture_project_identity(self, document):
-        """Capture template identity from the project XML while it is being read."""
-        candidates = []
-        raw_values = []
-        seen = set()
-
-        def add_candidate(source, value):
-            value = str(value or "").strip()
-            if not value:
-                return
-            raw_values.append((source, value))
-            if source in ("fileName", "originalPath"):
-                name = os.path.splitext(os.path.basename(value))[0].strip()
-            else:
-                name = value
-            key = name.casefold()
-            if name and key not in seen:
-                seen.add(key)
-                candidates.append((source, name))
-
-        project = QgsProject.instance()
-        for getter_name in ("fileName", "originalPath", "title"):
-            try:
-                add_candidate(getter_name, getattr(project, getter_name)())
-            except Exception as exc:
-                QgsMessageLog.logMessage(
-                    f"Could not read project identity field {getter_name}: {exc}",
-                    "StyleCore", level=Qgis.MessageLevel.Warning,
-                )
-
-        try:
-            root = document.documentElement()
-            for attr_name in ("projectname", "name", "title"):
-                add_candidate(f"xml:{attr_name}", root.attribute(attr_name))
-
-            title_element = root.firstChildElement("title")
-            if not title_element.isNull():
-                add_candidate("xml:title", title_element.text())
-        except Exception as exc:
-            QgsMessageLog.logMessage(
-                f"Could not inspect project XML identity: {exc}",
-                "StyleCore",
-                level=Qgis.MessageLevel.Warning
-            )
-
-        self._pending_project_identity = candidates
-        self._pending_project_raw_identity = raw_values
-
-        captured = ", ".join(
-            f"{source}='{value}'" for source, value in raw_values
-        ) or "no project identity found in project/XML yet"
-        QgsMessageLog.logMessage(
-            f"Project read event - captured identity: {captured}.",
-            "StyleCore",
-            level=Qgis.MessageLevel.Info
-        )
-
-    def _current_project_identity(self):
-        """Return identity candidates available after QGIS has completed reading."""
-        project = QgsProject.instance()
-        candidates = []
-        raw_values = []
-        seen = set()
-
-        for getter_name in ("fileName", "originalPath", "title"):
-            try:
-                value = getattr(project, getter_name)()
-            except Exception:
-                value = ""
-            value = str(value or "").strip()
-            if not value:
-                continue
-            raw_values.append((getter_name, value))
-            if getter_name in ("fileName", "originalPath"):
-                name = os.path.splitext(os.path.basename(value))[0].strip()
-            else:
-                name = value
-            key = name.casefold()
-            if name and key not in seen:
-                seen.add(key)
-                candidates.append((getter_name, name))
-
-        return candidates, raw_values
-
     def project_read_complete(self):
-        """Handle successful project reads without arbitrary time delays."""
+        """Normal saved projects keep their own styles and are never refreshed."""
         self._project_loading = False
-
         if self._project_load_skipped_count:
             QgsMessageLog.logMessage(
-                f"Project load finished - preserved saved styles on {self._project_load_skipped_count} loaded layer(s).",
-                "StyleCore",
-                level=Qgis.MessageLevel.Info
-            )
-
-        current_candidates, current_raw = self._current_project_identity()
-
-        # Merge identities captured from the XML/read phase with identities which
-        # QGIS exposes only after the project has been successfully read.
-        combined = []
-        seen = set()
-        for source, name in self._pending_project_identity + current_candidates:
-            key = name.casefold()
-            if key not in seen:
-                seen.add(key)
-                combined.append((source, name))
-
-        raw_values = self._pending_project_raw_identity + [
-            pair for pair in current_raw if pair not in self._pending_project_raw_identity
-        ]
-
-        self.restyle_selected_template(combined, raw_values)
-
-        self._pending_project_identity = []
-        self._pending_project_raw_identity = []
+                f"Preserved saved styles on {self._project_load_skipped_count} loaded layer(s).",
+                'StyleCore', level=Qgis.MessageLevel.Info)
         self._project_load_skipped_count = 0
-
-    def restyle_selected_template(self, candidates, raw_values):
-        project = QgsProject.instance()
-
-        configured = get_restyle_templates()
-        configured_by_key = {name.casefold(): name for name in configured}
-
-        identity_text = ", ".join(
-            f"{source}='{value}'" for source, value in raw_values
-        ) or "no filename/title/XML identity available"
-
-        QgsMessageLog.logMessage(
-            f"Project opened - identity check: {identity_text}. Configured restyle templates: {configured or 'none'}.",
-            "StyleCore",
-            level=Qgis.MessageLevel.Info
-        )
-
-        # The XML title can stay 'DK_VIS' after a user saves a separate old
-        # project. Only the actual template file (or an unsaved new project)
-        # is eligible for template restyling, never a saved project elsewhere.
-        current_file = str(project.fileName() or '').strip()
-        if current_file:
-            allowed_folders = [get_template_folder(), os.path.join(
-                QgsApplication.qgisSettingsDirPath(), 'project_templates')]
-            eligible = any(folder and os.path.normcase(os.path.abspath(
-                os.path.dirname(current_file))) == os.path.normcase(
-                os.path.abspath(folder)) for folder in allowed_folders)
-            if not eligible:
-                QgsMessageLog.logMessage(
-                    'Saved project outside the configured template folders - '
-                    'preserved its styles, regardless of title.',
-                    'StyleCore', level=Qgis.MessageLevel.Info)
-                return
-
-        matched_name = None
-        matched_source = None
-        for source, candidate in candidates:
-            configured_name = configured_by_key.get(candidate.casefold())
-            if configured_name:
-                matched_name = configured_name
-                matched_source = source
-                break
-
-        if not matched_name:
-            QgsMessageLog.logMessage(
-                "No configured template matched - saved project styles are preserved.",
-                "StyleCore",
-                level=Qgis.MessageLevel.Info
-            )
-            return
-
-        QgsMessageLog.logMessage(
-            f"Recognized configured template '{matched_name}' via {matched_source} - template restyling will run.",
-            "StyleCore",
-            level=Qgis.MessageLevel.Info
-        )
-
-        settings = QSettings()
-        enabled = settings.value(
-            ENABLED_KEY,
-            True,
-            type=bool
-        )
-        if not enabled:
-            QgsMessageLog.logMessage(
-                f"Template '{matched_name}' recognized, but automatic styling is disabled - no layers restyled.",
-                "StyleCore",
-                level=Qgis.MessageLevel.Info
-            )
-            return
-
-        layers = list(project.mapLayers().values())
-        QgsMessageLog.logMessage(
-            f"Template '{matched_name}' - checking {len(layers)} layer(s) for matching styles.",
-            "StyleCore",
-            level=Qgis.MessageLevel.Info
-        )
-
-        applied = 0
-        for layer in layers:
-            if self.apply_style(layer):
-                applied += 1
-
-        QgsMessageLog.logMessage(
-            f"Template '{matched_name}' restyle finished - {applied} of {len(layers)} layer(s) styled.",
-            "StyleCore",
-            level=Qgis.MessageLevel.Info
-        )
 
     def apply_style(self, layer):
         """Apply local override first, then shared config, then naming fallback.

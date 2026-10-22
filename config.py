@@ -9,7 +9,7 @@ from qgis.PyQt.QtCore import QSettings
 from .language import tr
 
 
-SETTINGS_KEY = "StyleCore/style_rules"  # Legacy v1.7 local settings only
+SETTINGS_KEY = "StyleCore/style_rules"  # Read only for migration of pre-1.8 overrides
 LEGACY_RULES_OWNER_KEY = "StyleCore/legacy_rules_owner"
 PERSONAL_RULES_PREFIX = "StyleCore/personal_style_rules/"
 ENABLED_KEY = "StyleCore/enabled"
@@ -75,6 +75,9 @@ def get_configuration_name():
 
 def get_root_folder():
     config = load_external_config()
+    if config.get("root_mode") == "config_dir":
+        config_path = get_config_file()
+        return os.path.normpath(os.path.dirname(os.path.abspath(config_path))) if config_path else ""
     config_root = str(config.get("root_folder", "")).strip()
     if config_root:
         return config_root
@@ -107,6 +110,125 @@ def get_template_folder():
 def get_layout_folder():
     root = get_root_folder()
     return os.path.join(root, get_folder_name("layouts")) if root else ""
+
+
+def _template_identity(value):
+    """Normalize a stored template ID without discarding its subfolder.
+
+    Legacy flat template names (with or without .qgs/.qgz) remain valid.
+    IDs for templates in subfolders are relative to template_projects and
+    use '/' as separator on Windows and other platforms.
+    """
+    name = str(value or '').strip().replace('\\', '/')
+    if name.lower().endswith(('.qgs', '.qgz')):
+        name = name[:-4]
+    return name.strip('/')
+
+
+def _template_ids(values):
+    if not isinstance(values, list):
+        return []
+    result, seen = [], set()
+    for value in values:
+        name = _template_identity(value)
+        if name and name.casefold() not in seen:
+            seen.add(name.casefold())
+            result.append(name)
+    return result
+
+
+def list_project_templates(root=None, external_templates=None):
+    """Find source QGIS projects directly, including nested project folders.
+
+    No source project or data file is copied or moved. A template's identity
+    is its path relative to the templates folder (without extension), rather
+    than its basename, so identical names in different folders are distinct.
+    Existing flat names retain their previous IDs for config compatibility.
+    """
+    folder = os.path.join(root, get_folder_name('templates')) if root is not None and root else (
+        get_template_folder() if root is None else '')
+    result = []
+    if folder and os.path.isdir(folder):
+        for current_dir, dirs, filenames in os.walk(folder, followlinks=False):
+            dirs.sort(key=str.casefold)
+            for filename in sorted(filenames, key=str.casefold):
+                if not filename.lower().endswith(('.qgs', '.qgz')):
+                    continue
+                path = os.path.join(current_dir, filename)
+                if not os.path.isfile(path):
+                    continue
+                rel = os.path.relpath(path, folder).replace('\\', '/')
+                key = _template_identity(rel)
+                result.append({'key': key, 'label': key, 'path': path,
+                               'kind': 'internal', 'relative_path': rel})
+
+    # Do not silently discard .qgs or .qgz sharing a stem in the same folder.
+    # Their IDs gain an extension only when both exist. The common case of a
+    # single .qgz keeps its existing, backwards-compatible name.
+    counts = {}
+    for entry in result:
+        key = entry['key'].casefold()
+        counts[key] = counts.get(key, 0) + 1
+    for entry in result:
+        if counts[entry['key'].casefold()] > 1:
+            extension = os.path.splitext(entry['relative_path'])[1].lower().lstrip('.')
+            entry['key'] = _template_identity(entry['relative_path']) + '#' + extension
+            entry['label'] = entry['relative_path']
+
+    internal_keys = {entry['key'].casefold() for entry in result}
+    external = get_external_templates() if external_templates is None else external_templates
+    for row in external:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get('name', '')).strip()
+        value = str(row.get('path', '')).strip()
+        if not name or not value:
+            continue
+        # Only conflicting IDs need the namespace; normal legacy external
+        # names continue to be recognized without migrating shared JSON.
+        key = name if name.casefold() not in internal_keys else '@external/' + name
+        result.append({'key': key, 'label': name,
+                       'path': resolve_external_template_path(value, root=root),
+                       'kind': 'external', 'relative_path': value})
+
+    # Case-insensitive identity is consistent with QGIS projects on Windows.
+    return sorted(result, key=lambda entry: (entry['label'].casefold(), entry['key'].casefold(), entry['path'].casefold()))
+
+
+def get_external_templates():
+    """External QGIS project templates from the shared configuration."""
+    raw = load_external_config().get("external_templates", [])
+    if not isinstance(raw, list):
+        return []
+    return [dict(row) for row in raw if isinstance(row, dict)
+            and str(row.get("name", "")).strip() and str(row.get("path", "")).strip()]
+
+
+def resolve_external_template_path(value, root=None):
+    """External paths in JSON are relative to the effective StyleCore root."""
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if os.path.isabs(value) or ntpath.isabs(value):
+        return os.path.normpath(value)
+    if root is None:
+        root = get_root_folder()
+    return os.path.normpath(os.path.join(root, value.replace('/', os.sep))) if root else ""
+
+
+def portable_external_template_path(value, root=None):
+    """Prefer relative references; different Windows drives require absolute paths."""
+    if not value:
+        return ""
+    absolute = value if ntpath.isabs(value) else os.path.abspath(value)
+    if root is None:
+        root = get_root_folder()
+    if not root:
+        return absolute
+    try:
+        return os.path.relpath(absolute, root).replace("\\", "/")
+    except ValueError:
+        return absolute
 
 
 def get_file_suffix_styles():
@@ -172,7 +294,6 @@ def match_file_suffix_rule(source, rules=None):
         if priority > best_priority:
             best_rule, best_priority = rule, priority
     return best_rule
-
 
 
 def _same_configuration(path_a, path_b):
@@ -321,7 +442,7 @@ def portable_style_path(path, style_folder):
     return path
 
 
-def save_configuration_settings(style_rules, restyle_templates, root_folder, expected_signature=None, file_suffix_styles=None):
+def save_configuration_settings(style_rules, restyle_templates, root_folder, expected_signature=None, file_suffix_styles=None, external_templates=None, inactive_templates=None):
     """Atomically update only the active config; preserve all other JSON keys."""
     config_path = get_config_file()
     if not config_path or not os.path.isfile(config_path):
@@ -330,27 +451,26 @@ def save_configuration_settings(style_rules, restyle_templates, root_folder, exp
     if not config:
         raise ValueError('The active StyleCore configuration could not be read.')
 
-    if not str(root_folder or '').strip():
+    if config.get('root_mode') != 'config_dir' and not str(root_folder or '').strip():
         raise ValueError('A StyleCore resource root folder must be selected.')
     cleaned = _validate_rules(style_rules)
 
-    templates = []
-    seen = set()
-    for value in restyle_templates:
-        name = os.path.splitext(os.path.basename(str(value).strip()))[0]
-        if name and name.casefold() not in seen:
-            templates.append(name)
-            seen.add(name.casefold())
+    templates = _template_ids(restyle_templates)
 
     if expected_signature is not None and config_signature(config_path) != expected_signature:
         raise RuntimeError("Shared configuration was changed by another user. Reload StyleCore settings before saving.")
 
-    config['root_folder'] = str(root_folder).strip()
+    config['root_folder'] = '' if config.get('root_mode') == 'config_dir' else str(root_folder).strip()
     config['style_rules'] = cleaned
     config['restyle_on_open'] = templates
+    if external_templates is not None:
+        config['external_templates'] = external_templates
+    if inactive_templates is not None:
+        config['inactive_templates'] = _template_ids(inactive_templates)
+    # Discard configuration keys from the retired template-sync and GeoJSON rules.
+    config.pop('templates_menu_only', None)
     if file_suffix_styles is not None:
         config['file_suffix_styles'] = file_suffix_styles
-    # File Suffix Rules are the only supported suffix format.
     config.pop('geojson_suffix_styles', None)
 
     # Create a temporary file beside the JSON for safe replacement, including
@@ -371,28 +491,14 @@ def save_configuration_settings(style_rules, restyle_templates, root_folder, exp
     return config
 
 
+def get_inactive_templates():
+    """Templates hidden from the StyleCore menu (default: all templates active)."""
+    return _template_ids(load_external_config().get('inactive_templates', []))
+
+
 def get_restyle_templates():
-    """Return project template basenames that should be restyled when opened."""
-    config = load_external_config()
-    values = config.get("restyle_on_open", [])
-    if not isinstance(values, list):
-        return []
-
-    result = []
-    seen = set()
-    for value in values:
-        name = os.path.splitext(os.path.basename(str(value).strip()))[0]
-        key = name.casefold()
-        if name and key not in seen:
-            seen.add(key)
-            result.append(name)
-    return result
-
-
-def save_restyle_templates(template_names):
-    """Legacy API: update templates atomically without discarding style rules."""
-    return save_configuration_settings(get_style_rules(), template_names,
-                                       get_root_folder())
+    """Return selected template IDs, retaining their relative folder paths."""
+    return _template_ids(load_external_config().get('restyle_on_open', []))
 
 
 def get_developer_code():

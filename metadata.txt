@@ -3,11 +3,28 @@ name=StyleCore
 qgisMinimumVersion=3.44
 qgisMaximumVersion=4.99
 description=Centralized management of styles, project templates, print layouts, fonts and shared configurations in QGIS.
-about=StyleCore helps individuals and teams keep QGIS projects consistent by working with shared styles, project templates and print layouts. This plugin is tool that connects entire offices and teams to the same shared styles, and makes it easy to maintain styles for everone at once!
-version=1.8.3
+about=StyleCore helps individuals and teams keep QGIS projects consistent by working with shared styles, project templates and print layouts. This plugin is a tool that connects entire offices and teams to the same shared styles, and makes it easy to maintain styles for everyone at once!
+version=1.9.0
 author=Angelo Jensen Dobbs
 email=Angelo.anaru@gmail.com
-changelog=1.8.3: Updated Qt6-compatible enum names and improved error reporting.
+changelog=v1.9.0:
+
+    -Redesigned project template management with direct loading from shared folders.
+
+    -Added Active and Refresh controls for project templates.
+
+    -Added portable configurations using the configuration file directory as the resource root.
+
+    -Improved the configuration creation dialog with direct JSON file selection.
+
+    -Improved automatic and manual styling workflows.
+
+    -Added one-click QML file browsing for shared automatic style rules.
+
+    -Added a warning when a previously selected configuration file is missing.
+
+    -Improved usability, error handling and code cleanup.
+	
 experimental=False
 tags=Style management, shared styles, common styles, shared layers, autostyle, automatic styling
 homepage=https://vnaru42.github.io/StyleCore-Docs/

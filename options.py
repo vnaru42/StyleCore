@@ -6,7 +6,7 @@ import uuid
 
 from qgis.core import QgsProject, QgsMessageLog, Qgis
 from qgis.PyQt.QtCore import QSettings, Qt, QEvent, QTimer
-from qgis.PyQt.QtGui import QIcon, QPalette
+from qgis.PyQt.QtGui import QIcon, QPalette, QColor, QFont
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -25,6 +25,9 @@ from qgis.PyQt.QtWidgets import (
     QLineEdit,
     QSizePolicy,
     QScrollArea,
+    QStyle,
+    QStyleOptionViewItem,
+    QStyledItemDelegate,
     QWidget,
     QListWidget,
     QListWidgetItem,
@@ -49,12 +52,17 @@ from .config import (
     match_file_suffix_rule,
     get_file_suffix_style_path,
     get_root_folder,
+    get_external_templates,
+    resolve_external_template_path,
+    portable_external_template_path,
     get_config_file,
     load_external_config,
     get_configuration_name,
     get_developer_code,
     get_folder_name,
     get_restyle_templates,
+    get_inactive_templates,
+    list_project_templates,
     get_style_rules,
     get_personal_style_rules,
     save_personal_style_rules,
@@ -63,6 +71,63 @@ from .config import (
     portable_style_path,
     save_configuration_settings,
 )
+
+
+_TEMPLATE_KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+_TEMPLATE_PATH_ROLE = int(Qt.ItemDataRole.UserRole) + 2
+
+
+class _TemplateNameDelegate(QStyledItemDelegate):
+    """Keep the original template name readable, with a muted external tag.
+
+    Only developer settings shows this tag; the New from Template menu
+    continues to use the normal, unmodified template labels.
+    """
+
+    def paint(self, painter, option, index):
+        if index.data(_TEMPLATE_KIND_ROLE) != 'external':
+            super().paint(painter, option, index)
+            return
+
+        display = QStyleOptionViewItem(option)
+        self.initStyleOption(display, index)
+        name = display.text
+        display.text = ''
+        style = display.widget.style() if display.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, display, painter, display.widget)
+
+        painter.save()
+        painter.setClipRect(option.rect)
+        name_font = display.font
+        painter.setFont(name_font)
+        name_metrics = painter.fontMetrics()
+        tag_font = QFont(name_font)
+        if tag_font.pointSizeF() > 0:
+            tag_font.setPointSizeF(max(7.0, tag_font.pointSizeF() - 1.0))
+        elif tag_font.pixelSize() > 0:
+            tag_font.setPixelSize(max(9, tag_font.pixelSize() - 1))
+        painter.setFont(tag_font)
+        tag_metrics = painter.fontMetrics()
+        tag = 'external'
+        tag_width = tag_metrics.horizontalAdvance(tag)
+        available = max(0, option.rect.width() - 12 - tag_width - 9)
+        visible_name = name_metrics.elidedText(name, Qt.TextElideMode.ElideRight, available)
+        selected = bool(display.state & QStyle.StateFlag.State_Selected)
+        text_role = QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text
+        name_color = display.palette.color(text_role)
+        painter.setFont(name_font)
+        painter.setPen(name_color)
+        name_rect = option.rect.adjusted(5, 0, -5, 0)
+        painter.drawText(name_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, visible_name)
+
+        name_width = name_metrics.horizontalAdvance(visible_name)
+        tag_color = QColor(name_color)
+        tag_color.setAlpha(125)
+        painter.setFont(tag_font)
+        painter.setPen(tag_color)
+        tag_rect = option.rect.adjusted(5 + name_width + 9, 0, -5, 0)
+        painter.drawText(tag_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, tag)
+        painter.restore()
 
 
 class CollapsibleSection(QWidget):
@@ -255,6 +320,9 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         layout.addWidget(personal_title)
         self.personal_table = QTableWidget()
         self.personal_table.setColumnCount(3)
+        self.personal_table.verticalHeader().setDefaultSectionSize(20)
+        self.personal_table.verticalHeader().setMinimumSectionSize(18)
+        self.personal_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self.personal_table.setHorizontalHeaderLabels([
             tr('Layer name'), tr('Personal style'), tr('Shared default')
         ])
@@ -345,19 +413,55 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
 
         developer_layout.addWidget(folder_group)
 
-        template_group = QGroupBox(tr('Template refresh'))
+        template_group = QGroupBox('Templates')
         template_layout = QVBoxLayout(template_group)
-        template_info = QLabel(tr(
-            "Select which project templates should have existing layers checked "
-            "and restyled when the template is opened."
-        ))
+        template_info = QLabel(
+            'All templates are listed here. Active: show in StyleCore > New from Template. '
+            'Refresh: reapply matching StyleCore styles ONLY when opened via that menu. '
+            'Neither setting changes the source project or its data files.')
         template_info.setWordWrap(True)
         template_layout.addWidget(template_info)
 
-        self.restyle_template_list = QListWidget()
-        self.restyle_template_list.setAlternatingRowColors(True)
-        self.restyle_template_list.setMaximumHeight(110)
-        template_layout.addWidget(self.restyle_template_list)
+        # One compact list for root, nested, and linked external templates.
+        # External files are edited with the buttons or a double click on a row.
+        self._external_template_entries = []
+        self.template_table = QTableWidget()
+        self.template_table.setColumnCount(3)
+        self.template_table.setHorizontalHeaderLabels(['Active', 'Refresh', 'Template'])
+        self.template_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.template_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.template_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.template_table.setColumnWidth(0, 28)
+        self.template_table.setColumnWidth(1, 28)
+        self.template_table.horizontalHeaderItem(0).setToolTip('Active: show in StyleCore > New from Template')
+        self.template_table.horizontalHeaderItem(1).setToolTip('Refresh: reapply matching StyleCore styles when opened via that menu')
+        self.template_table.verticalHeader().hide()
+        self.template_table.verticalHeader().setDefaultSectionSize(20)
+        self.template_table.verticalHeader().setMinimumSectionSize(18)
+        self.template_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self.template_table.setMaximumHeight(180)
+        self.template_table.setAlternatingRowColors(False)
+        self.template_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.template_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.template_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.template_table.setItemDelegateForColumn(2, _TemplateNameDelegate(self.template_table))
+        self.template_table.cellDoubleClicked.connect(self.edit_external_template)
+        self.template_table.itemSelectionChanged.connect(self.update_external_template_buttons)
+        template_layout.addWidget(self.template_table)
+
+        external_buttons = QHBoxLayout()
+        external_buttons.setSpacing(6)
+        self.external_add_button = QPushButton('Add external template...')
+        self.external_edit_button = QPushButton('Edit selected...')
+        self.external_remove_button = QPushButton('Remove selected')
+        self.external_add_button.clicked.connect(self.add_external_template)
+        self.external_edit_button.clicked.connect(self.edit_external_template)
+        self.external_remove_button.clicked.connect(self.remove_external_template)
+        external_buttons.addWidget(self.external_add_button)
+        external_buttons.addWidget(self.external_edit_button)
+        external_buttons.addWidget(self.external_remove_button)
+        external_buttons.addStretch()
+        template_layout.addLayout(external_buttons)
         developer_layout.addWidget(template_group)
 
         title = QLabel(tr('Shared automatic layer styles'))
@@ -371,19 +475,25 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
 
         self.table = QTableWidget()
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.table.setColumnCount(3)
+        self.table.verticalHeader().setDefaultSectionSize(20)
+        self.table.verticalHeader().setMinimumSectionSize(18)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels([
             tr('Layer name'),
             tr('Style path'),
             tr("Status"),
+            "...",
         ])
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(0, 220)
         self.table.setColumnWidth(2, 110)
+        self.table.setColumnWidth(3, 42)
 
         self.table.cellDoubleClicked.connect(self.choose_style_file)
         self.table.itemSelectionChanged.connect(self.update_buttons)
@@ -408,6 +518,9 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         developer_layout.addWidget(suffix_label)
         self.suffix_table = QTableWidget()
         self.suffix_table.setColumnCount(3)
+        self.suffix_table.verticalHeader().setDefaultSectionSize(20)
+        self.suffix_table.verticalHeader().setMinimumSectionSize(18)
+        self.suffix_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self.suffix_table.setHorizontalHeaderLabels([tr("Suffix"), tr("File type"), tr("QML file")])
         self.suffix_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         self.suffix_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
@@ -460,7 +573,162 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
             app.removeEventFilter(self._accept_guard)
 
     def current_root_folder(self):
+        if load_external_config().get('root_mode') == 'config_dir':
+            return get_root_folder()
         return self.root_folder_edit.text().strip()
+
+    def _root_value_for_config(self):
+        return '' if load_external_config().get('root_mode') == 'config_dir' else self.current_root_folder()
+
+    def _selected_external_template(self):
+        """Return (index, template-key) for a selected external row."""
+        row = self.template_table.currentRow()
+        if row < 0:
+            return None
+        item = self.template_table.item(row, 2)
+        if not item or item.data(_TEMPLATE_KIND_ROLE) != 'external':
+            return None
+        name = item.text().strip()
+        path = item.data(_TEMPLATE_PATH_ROLE)
+        for index, entry in enumerate(self._external_template_entries):
+            if entry['name'] == name and entry['path'] == path:
+                return index, item.data(Qt.ItemDataRole.UserRole)
+        return None
+
+    def update_external_template_buttons(self):
+        editable = bool(self.developer_checkbox.isChecked())
+        selected = editable and self._selected_external_template() is not None
+        self.external_add_button.setEnabled(editable)
+        self.external_edit_button.setEnabled(selected)
+        self.external_remove_button.setEnabled(selected)
+
+    def _external_name_taken(self, name, exclude=None):
+        return any(i != exclude and row['name'].casefold() == name.casefold()
+                   for i, row in enumerate(self._external_template_entries))
+
+    def add_external_template(self):
+        if not self.developer_checkbox.isChecked():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select external QGIS project template',
+            self.current_root_folder(), 'QGIS project (*.qgz *.qgs)')
+        if not path:
+            return
+        name = os.path.splitext(os.path.basename(path))[0]
+        if self._external_name_taken(name):
+            QMessageBox.information(self, 'StyleCore',
+                                    'This external name is already in use. Choose a different name.')
+            name, accepted = QInputDialog.getText(self, 'External template', 'Template name:', text=name)
+            if not accepted:
+                return
+            name = name.strip()
+        if not name or self._external_name_taken(name):
+            QMessageBox.warning(self, 'StyleCore', 'External template names must be unique and nonempty.')
+            return
+        portable = portable_external_template_path(path, root=self.current_root_folder())
+        self._external_template_entries.append({'name': name, 'path': portable})
+        self.load_restyle_templates(preserve_current=True)
+        for row in range(self.template_table.rowCount()):
+            item = self.template_table.item(row, 2)
+            if item and item.data(_TEMPLATE_KIND_ROLE) == 'external' and item.text() == name:
+                self.template_table.selectRow(row)
+                break
+
+    def edit_external_template(self, *_args):
+        if not self.developer_checkbox.isChecked():
+            return
+        selected = self._selected_external_template()
+        if selected is None:
+            return
+        index, old_key = selected
+        current = self._external_template_entries[index]
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Edit external template')
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        name_edit = QLineEdit(current['name'], dialog)
+        path_edit = QLineEdit(current['path'], dialog)
+        browse_button = QPushButton('...', dialog)
+        browse_button.setFixedWidth(38)
+        path_line = QHBoxLayout()
+        path_line.addWidget(path_edit)
+        path_line.addWidget(browse_button)
+        form.addRow('Template name:', name_edit)
+        form.addRow('QGIS project (.qgs/.qgz):', path_line)
+        layout.addLayout(form)
+
+        def browse():
+            start = resolve_external_template_path(path_edit.text().strip(),
+                                                   root=self.current_root_folder())
+            path, _ = QFileDialog.getOpenFileName(
+                dialog, 'Select external QGIS project template',
+                start if start else self.current_root_folder(), 'QGIS project (*.qgz *.qgs)')
+            if path:
+                path_edit.setText(portable_external_template_path(path, root=self.current_root_folder()))
+
+        browse_button.clicked.connect(browse)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                                   QDialogButtonBox.StandardButton.Cancel, parent=dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        name = name_edit.text().strip()
+        path = path_edit.text().strip()
+        if not name or self._external_name_taken(name, exclude=index):
+            QMessageBox.warning(self, 'StyleCore', 'External template names must be unique and nonempty.')
+            return
+        if not path:
+            QMessageBox.warning(self, 'StyleCore', 'Choose a project file for the external template.')
+            return
+        old_active, old_refresh = self._template_selection()
+        self._external_template_entries[index] = {'name': name, 'path': path}
+        self.load_restyle_templates(preserve_current=True)
+        # Renaming a template must not silently reset its Active/Refresh.
+        for row in range(self.template_table.rowCount()):
+            item = self.template_table.item(row, 2)
+            if item and item.data(_TEMPLATE_KIND_ROLE) == 'external' and item.text() == name and item.data(_TEMPLATE_PATH_ROLE) == path:
+                active_item = self.template_table.item(row, 0)
+                refresh_item = self.template_table.item(row, 1)
+                active_item.setCheckState(Qt.CheckState.Checked if old_key in old_active else Qt.CheckState.Unchecked)
+                refresh_item.setCheckState(Qt.CheckState.Checked if old_key in old_refresh else Qt.CheckState.Unchecked)
+                self.template_table.selectRow(row)
+                break
+
+    def remove_external_template(self):
+        if not self.developer_checkbox.isChecked():
+            return
+        selected = self._selected_external_template()
+        if selected is None:
+            return
+        index, _key = selected
+        self._external_template_entries.pop(index)
+        self.load_restyle_templates(preserve_current=True)
+
+    def _external_templates_draft(self, validate=False):
+        """Draft entries are stored separately, but displayed in ONE table."""
+        items, names = [], set()
+        for entry in self._external_template_entries:
+            name = str(entry.get('name', '')).strip()
+            path = str(entry.get('path', '')).strip()
+            if not name or not path:
+                raise ValueError('External templates need both a name and a project file.')
+            if name.casefold() in names:
+                raise ValueError('Duplicate external template name: ' + name)
+            names.add(name.casefold())
+            resolved = resolve_external_template_path(path, root=self.current_root_folder())
+            if not resolved.lower().endswith(('.qgz', '.qgs')):
+                raise ValueError('External templates must be .qgs or .qgz: ' + name)
+            if validate and not os.path.isfile(resolved):
+                raise ValueError('External project file not found: ' + resolved)
+            if validate:
+                internal_entries = list_project_templates(
+                    root=self.current_root_folder(), external_templates=[])
+                if any(internal['key'].casefold() == name.casefold() for internal in internal_entries):
+                    raise ValueError('Name already used by an internal template: ' + name)
+            items.append({'name': name, 'path': path})
+        return items
 
     def current_style_folder(self):
         root = self.current_root_folder()
@@ -485,8 +753,7 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         settings.setValue(CONFIG_FILE_KEY, path)
         settings.remove(ROOT_FOLDER_KEY)
 
-        root = str(config.get("root_folder", "")).strip()
-        self.root_folder_edit.setText(root)
+        self.root_folder_edit.setText(get_root_folder())
         self.refresh_configuration_ui()
         # Developer permission is never carried between organizations.
         self.developer_checkbox.setChecked(False)
@@ -498,7 +765,6 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
             self.root_folder_changed_callback()
 
     def load_configuration_from_path(self):
-        # QLineEdit preserves UNC backslashes without rewriting them.
         path = self.config_path_edit.text().strip().strip('"')
         if not path:
             QMessageBox.warning(self, 'StyleCore', tr('Enter a configuration JSON path.'))
@@ -514,7 +780,7 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         path, _ = QFileDialog.getOpenFileName(
             self,
             tr('Load StyleCore configuration'),
-            BUNDLED_CONFIG_DIR,  # Always start in StyleCore/config, not the active file's folder.
+            BUNDLED_CONFIG_DIR,
             "StyleCore configuration (*.json);;JSON (*.json)",
         )
         if not path:
@@ -534,15 +800,80 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
     def create_configuration_file(self):
         dialog = QDialog(self)
         dialog.setWindowTitle(tr('New StyleCore configuration'))
-        dialog.resize(560, 260)
+        dialog.resize(610, 310)
         layout = QVBoxLayout(dialog)
 
         form = QFormLayout()
         name_edit = QLineEdit(tr('My StyleCore configuration'))
+        default_dir = self.current_root_folder() or os.path.expanduser('~')
+        config_file_edit = QLineEdit(os.path.join(default_dir, 'stylecore_config.json'))
+        config_file_row = QHBoxLayout()
+        config_file_row.addWidget(config_file_edit)
+        config_browse_button = QPushButton('...')
+        config_browse_button.setFixedWidth(38)
+        config_file_row.addWidget(config_browse_button)
+
         root_edit = QLineEdit(self.current_root_folder())
-        styles_edit = QLineEdit("layer_styles")
-        templates_edit = QLineEdit("template_projects")
-        layouts_edit = QLineEdit("layouts")
+        root_row = QHBoxLayout()
+        root_row.addWidget(root_edit)
+        browse_button = QPushButton('...')
+        browse_button.setFixedWidth(38)
+        root_row.addWidget(browse_button)
+        auto_root_checkbox = QCheckBox(tr('Use configuration file folder as resource root (recommended)'))
+        auto_root_checkbox.setChecked(True)
+        custom_root = [root_edit.text()]
+
+        def selected_config_path():
+            path = config_file_edit.text().strip().strip('"')
+            if path and not path.lower().endswith('.json'):
+                path += '.json'
+            return os.path.abspath(os.path.expanduser(path)) if path else ''
+
+        def update_root_preview():
+            if auto_root_checkbox.isChecked():
+                path = selected_config_path()
+                root_edit.setText(os.path.dirname(path) if path else '')
+
+        def update_root_mode(enabled):
+            if enabled:
+                custom_root[0] = root_edit.text()
+                update_root_preview()
+            else:
+                root_edit.setText(custom_root[0])
+            root_edit.setEnabled(not enabled)
+            browse_button.setEnabled(not enabled)
+            root_edit.setToolTip(tr('Root follows the configuration file folder.') if enabled
+                                 else tr('Choose a resource folder independent of the JSON location.'))
+
+        def browse_config_file():
+            path, _ = QFileDialog.getSaveFileName(
+                dialog,
+                tr('Save StyleCore configuration'),
+                selected_config_path() or os.path.join(os.path.expanduser('~'), 'stylecore_config.json'),
+                'StyleCore configuration (*.json);;JSON (*.json)',
+            )
+            if path:
+                config_file_edit.setText(path if path.lower().endswith('.json') else path + '.json')
+
+        def browse_root():
+            folder = QFileDialog.getExistingDirectory(
+                dialog,
+                tr('Select StyleCore root folder'),
+                root_edit.text().strip(),
+            )
+            if folder:
+                root_edit.setText(folder)
+                custom_root[0] = folder
+
+        config_browse_button.clicked.connect(browse_config_file)
+        config_file_edit.textChanged.connect(lambda _: update_root_preview())
+        browse_button.clicked.connect(browse_root)
+        auto_root_checkbox.toggled.connect(update_root_mode)
+        update_root_mode(True)
+
+        styles_edit = QLineEdit('layer_styles')
+        templates_edit = QLineEdit('template_projects')
+        layouts_edit = QLineEdit('layouts')
         code_edit = QLineEdit()
         code_edit.setEchoMode(QLineEdit.EchoMode.Password)
         confirm_edit = QLineEdit()
@@ -554,31 +885,16 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
             confirm_edit.setEchoMode(mode)
         show_code.toggled.connect(toggle_code)
 
-        root_row = QHBoxLayout()
-        root_row.addWidget(root_edit)
-        browse_button = QPushButton("...")
-        browse_button.setFixedWidth(38)
-        root_row.addWidget(browse_button)
-
-        def browse_root():
-            folder = QFileDialog.getExistingDirectory(
-                dialog,
-                tr('Select StyleCore root folder'),
-                root_edit.text().strip(),
-            )
-            if folder:
-                root_edit.setText(folder)
-
-        browse_button.clicked.connect(browse_root)
-
         form.addRow(tr('Name:'), name_edit)
+        form.addRow(tr('Configuration file:'), config_file_row)
+        form.addRow('', auto_root_checkbox)
         form.addRow(tr('Root folder:'), root_row)
         form.addRow(tr('Styles folder:'), styles_edit)
         form.addRow(tr('Templates folder:'), templates_edit)
         form.addRow(tr('Print layouts folder:'), layouts_edit)
-        form.addRow(tr("Developer code:"), code_edit)
-        form.addRow(tr("Confirm developer code:"), confirm_edit)
-        form.addRow("", show_code)
+        form.addRow(tr('Developer code:'), code_edit)
+        form.addRow(tr('Confirm developer code:'), confirm_edit)
+        form.addRow('', show_code)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(
@@ -589,11 +905,21 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         buttons.button(QDialogButtonBox.StandardButton.Save).setText(tr('Save configuration'))
         def confirm_new_config():
             if not code_edit.text().strip() or code_edit.text() != confirm_edit.text():
-                QMessageBox.warning(dialog, "StyleCore", tr(
-                    "Enter a developer code and confirm it with the same code."))
+                QMessageBox.warning(dialog, 'StyleCore', tr(
+                    'Enter a developer code and confirm it with the same code.'))
                 return
-            if not root_edit.text().strip():
-                QMessageBox.warning(dialog, "StyleCore", tr('Root folder missing'))
+            path = selected_config_path()
+            if not path or not os.path.isabs(config_file_edit.text().strip().strip('"')):
+                QMessageBox.warning(dialog, 'StyleCore', tr('Choose an absolute configuration file path.'))
+                return
+            if not os.path.isdir(os.path.dirname(path)):
+                QMessageBox.warning(dialog, 'StyleCore', tr('The configuration file folder does not exist.'))
+                return
+            if os.path.exists(path):
+                QMessageBox.warning(dialog, 'StyleCore', tr('This configuration file already exists. Choose another name.'))
+                return
+            if not auto_root_checkbox.isChecked() and not root_edit.text().strip():
+                QMessageBox.warning(dialog, 'StyleCore', tr('Root folder missing'))
                 return
             dialog.accept()
         buttons.accepted.connect(confirm_new_config)
@@ -602,28 +928,8 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
 
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        root = root_edit.text().strip()
-        if not root:
-            QMessageBox.warning(
-                self,
-                tr('Root folder missing'),
-                tr('Select a root folder for the StyleCore resources.'),
-            )
-            return
-
-        default_dir = root if os.path.isdir(root) else os.path.expanduser("~")
-        default_name = "stylecore_config.json"
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            tr('Save StyleCore configuration'),
-            os.path.join(default_dir, default_name),
-            "StyleCore configuration (*.json);;JSON (*.json)",
-        )
-        if not path:
-            return
-        if not path.lower().endswith(".json"):
-            path += ".json"
-
+        path = selected_config_path()
+        root = os.path.dirname(path) if auto_root_checkbox.isChecked() else root_edit.text().strip()
         folders = {
             "styles": styles_edit.text().strip() or "layer_styles",
             "templates": templates_edit.text().strip() or "template_projects",
@@ -648,7 +954,11 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         config = {
             "name": name_edit.text().strip() or "StyleCore",
             "config_id": str(uuid.uuid4()),
-            "root_folder": root,
+            "root_folder": "" if auto_root_checkbox.isChecked() else root,
+            "root_mode": "config_dir" if auto_root_checkbox.isChecked() else "custom",
+            "save_paths": "relative",
+            "external_templates": [],
+            "inactive_templates": [],
             "folders": folders,
             "file_suffix_styles": [],
             "restyle_on_open": [],
@@ -717,47 +1027,71 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
 
         return styles
 
-    def load_restyle_templates(self):
-        configured = get_restyle_templates()
-        configured_keys = {name.casefold() for name in configured}
+    def _template_selection(self):
+        """Capture template IDs, preserving subfolders and current edits."""
+        active, refresh = [], []
+        for row in range(self.template_table.rowCount()):
+            name_item = self.template_table.item(row, 2)
+            active_item = self.template_table.item(row, 0)
+            refresh_item = self.template_table.item(row, 1)
+            if not name_item:
+                continue
+            key = name_item.data(Qt.ItemDataRole.UserRole) or name_item.text().strip()
+            if active_item and active_item.checkState() == Qt.CheckState.Checked:
+                active.append(key)
+            if refresh_item and refresh_item.checkState() == Qt.CheckState.Checked:
+                refresh.append(key)
+        return active, refresh
 
-        available = {}
-        template_folder = os.path.join(
-            self.current_root_folder(),
-            get_folder_name("templates"),
-        ) if self.current_root_folder() else ""
+    def load_restyle_templates(self, preserve_current=False):
+        """One list for all flat, nested, and separately linked templates."""
+        existing_active, existing_refresh = self._template_selection() if preserve_current else ([], [])
+        previous_ids = {
+            (self.template_table.item(r, 2).data(Qt.ItemDataRole.UserRole)
+             or self.template_table.item(r, 2).text().strip()).casefold()
+            for r in range(self.template_table.rowCount())
+            if self.template_table.item(r, 2)
+        } if preserve_current else set()
+        configured_refresh = {n.casefold() for n in get_restyle_templates()}
+        configured_inactive = {n.casefold() for n in get_inactive_templates()}
+        old_active = {n.casefold() for n in existing_active}
+        old_refresh = {n.casefold() for n in existing_refresh}
+        root = self.current_root_folder()
+        external = self._external_templates_draft()
+        entries = list_project_templates(root=root, external_templates=external)
 
-        if os.path.isdir(template_folder):
-            for filename in os.listdir(template_folder):
-                if not filename.lower().endswith((".qgz", ".qgs")):
-                    continue
-                name = os.path.splitext(filename)[0]
-                available[name.casefold()] = name
-
-        for name in configured:
-            available.setdefault(name.casefold(), name)
-
-        self.restyle_template_list.blockSignals(True)
-        self.restyle_template_list.clear()
-        for key in sorted(available, key=lambda value: available[value].casefold()):
-            name = available[key]
-            item = QListWidgetItem(name)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(
-                Qt.CheckState.Checked
-                if key in configured_keys
-                else Qt.CheckState.Unchecked
-            )
-            self.restyle_template_list.addItem(item)
-        self.restyle_template_list.blockSignals(False)
+        self.template_table.setRowCount(0)
+        for entry in entries:
+            key = entry['key']
+            folded = key.casefold()
+            row = self.template_table.rowCount()
+            self.template_table.insertRow(row)
+            name_item = QTableWidgetItem(entry['label'])
+            name_item.setData(Qt.ItemDataRole.UserRole, key)
+            name_item.setData(_TEMPLATE_KIND_ROLE, entry['kind'])
+            name_item.setData(_TEMPLATE_PATH_ROLE, entry['relative_path'])
+            name_item.setToolTip(entry['path'])
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.template_table.setItem(row, 2, name_item)
+            for column, checked in (
+                (0, folded in old_active if preserve_current and folded in previous_ids else folded not in configured_inactive),
+                (1, folded in old_refresh if preserve_current and folded in previous_ids else folded in configured_refresh)
+            ):
+                check_item = QTableWidgetItem()
+                check_item.setFlags((check_item.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable)
+                check_item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+                self.template_table.setItem(row, column, check_item)
+        self.update_shared_edit_mode()
 
     def selected_restyle_templates(self):
-        return [
-            self.restyle_template_list.item(i).text().strip()
-            for i in range(self.restyle_template_list.count())
-            if self.restyle_template_list.item(i).checkState() == Qt.CheckState.Checked
-            and self.restyle_template_list.item(i).text().strip()
-        ]
+        return self._template_selection()[1]
+
+    def inactive_templates_draft(self):
+        active = {n.casefold() for n in self._template_selection()[0]}
+        return [key for row in range(self.template_table.rowCount())
+                if (item := self.template_table.item(row, 2))
+                and (key := item.data(Qt.ItemDataRole.UserRole) or item.text().strip())
+                and key.casefold() not in active]
 
     def add_suffix_row(self, suffix, path, extension="*"):
         row = self.suffix_table.rowCount()
@@ -790,10 +1124,6 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         if answer == QMessageBox.StandardButton.Yes:
             self.personal_table.setRowCount(0)
             self.update_buttons()
-
-    def request_developer_access(self, enabled):
-        # Compatibility with former handler; merely show editing controls.
-        self.update_developer_ui()
 
     def _suffix_rules_draft(self, folder, validate=False):
         """Serialize only File Suffix Rules; no legacy GeoJSON special cases."""
@@ -852,9 +1182,11 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
             if name and style:
                 rules.append({'layer': name, 'style': portable_style_path(resolve_style_path(style, folder), folder)})
         file_rules = self._suffix_rules_draft(folder)
-        return {'root_folder': self.current_root_folder(), 'style_rules': rules,
+        return {'root_folder': self._root_value_for_config(), 'style_rules': rules,
                 'restyle_on_open': self.selected_restyle_templates(),
-                'file_suffix_styles': file_rules}
+                'file_suffix_styles': file_rules,
+                'external_templates': self._external_templates_draft(),
+                'inactive_templates': self.inactive_templates_draft()}
 
     def _shared_fingerprint(self):
         draft = self._shared_draft()
@@ -868,7 +1200,11 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         Returning False stops QGIS closing the parent Options window and
         keeps unsaved fields intact when code verification is cancelled.
         """
-        draft = self._shared_draft()
+        try:
+            draft = self._shared_draft()
+        except ValueError as exc:
+            QMessageBox.warning(self, 'StyleCore', str(exc))
+            return False
         if draft is None:
             return True
         stored = load_external_config()
@@ -880,11 +1216,13 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
             'style_rules': get_style_rules(),
             'restyle_on_open': get_restyle_templates(),
             'file_suffix_styles': get_file_suffix_styles(),
+            'external_templates': get_external_templates(),
+            'inactive_templates': get_inactive_templates(),
         }
         if draft == baseline:
             self._approved_shared_fingerprint = None
             return True
-        if not draft['root_folder']:
+        if not self.current_root_folder():
             QMessageBox.warning(self, 'StyleCore', tr('Root folder missing'))
             return False
         if self.loaded_config_signature != config_signature():
@@ -923,6 +1261,9 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
                 for r in shared_rules if isinstance(r, dict) and r.get('layer')
             }
             if include_developer:
+                self._external_template_entries = [
+                    {'name': str(entry.get('name', '')), 'path': str(entry.get('path', ''))}
+                    for entry in get_external_templates()]
                 self.load_restyle_templates()
             personal_rules = get_personal_style_rules()
             if include_developer:
@@ -1053,17 +1394,19 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
 
     def update_shared_edit_mode(self, *_args):
         editable = bool(self.developer_checkbox.isChecked())
-        self.root_folder_edit.setReadOnly(not editable)
-        self.root_folder_button.setEnabled(editable)
-        # Disable individual template checkboxes, not the list widget itself:
-        # users should still be able to scroll through every configured template.
-        for index in range(self.restyle_template_list.count()):
-            item = self.restyle_template_list.item(index)
-            flags = item.flags()
-            if editable:
-                item.setFlags(flags | Qt.ItemFlag.ItemIsEnabled)
-            else:
-                item.setFlags(flags & ~Qt.ItemFlag.ItemIsEnabled)
+        auto_root = load_external_config().get('root_mode') == 'config_dir'
+        self.root_folder_edit.setText(self.current_root_folder()) if auto_root else None
+        self.root_folder_edit.setReadOnly(not editable or auto_root)
+        self.root_folder_button.setEnabled(editable and not auto_root)
+        self.update_external_template_buttons()
+        # Keep the list readable; only developers may toggle Active / Refresh.
+        for row in range(self.template_table.rowCount()):
+            for column in (0, 1):
+                item = self.template_table.item(row, column)
+                if item:
+                    flags = item.flags()
+                    item.setFlags(flags | Qt.ItemFlag.ItemIsEnabled if editable
+                                  else flags & ~Qt.ItemFlag.ItemIsEnabled)
         self.table.setEditTriggers(
             QAbstractItemView.EditTrigger.AllEditTriggers if editable
             else QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1109,6 +1452,23 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         self.table.setItem(row, 1, style_item)
         self.table.setItem(row, 2, status_item)
 
+        # StyleCore: Browse shared QML directly without entering cell edit mode.
+        browse_button = QPushButton('...')
+        browse_button.setToolTip(tr('Browse for QML style'))
+        browse_button.setEnabled(self.developer_checkbox.isChecked())
+        browse_button.clicked.connect(
+            lambda _checked=False, button=browse_button: self._browse_shared_style(button))
+        self.table.setCellWidget(row, 3, browse_button)
+
+    def _browse_shared_style(self, button):
+        # Resolve the current row at click time: deleting rows changes indices.
+        if not self.developer_checkbox.isChecked():
+            return
+        for row in range(self.table.rowCount()):
+            if self.table.cellWidget(row, 3) is button:
+                self.choose_style_file(row, 1)
+                return
+
     def choose_style_file(self, row, column):
         if not self.developer_checkbox.isChecked() or column != 1:
             return
@@ -1119,7 +1479,9 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
 
         current_status = status_item.data(Qt.ItemDataRole.UserRole) or status_item.text()
         current_item = self.table.item(row, 1)
-        start_path = current_item.text() if current_item else self.current_style_folder()
+        start_path = current_item.text().strip() if current_item else ''
+        if not start_path or not os.path.exists(start_path):
+            start_path = self.current_style_folder()
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -1567,7 +1929,9 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
             old_rules = get_style_rules()
             shared_changed = (old_rules != rules or get_file_suffix_styles() != file_rules
                 or get_restyle_templates() != self.selected_restyle_templates()
-                or str(shared.get('root_folder', '')).strip() != self.current_root_folder())
+                or str(shared.get('root_folder', '')).strip() != self._root_value_for_config()
+                or get_external_templates() != self._external_templates_draft()
+                or get_inactive_templates() != self.inactive_templates_draft())
             if shared_changed:
                 if not self.isValid():
                     # Leave UI edits untouched and never save shared JSON.
@@ -1594,11 +1958,14 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
                     if answer != QMessageBox.StandardButton.Yes:
                         return None
                 try:
+                    external_templates = self._external_templates_draft(validate=True)
                     save_configuration_settings(
                         rules, self.selected_restyle_templates(),
-                        self.current_root_folder(),
+                        self._root_value_for_config(),
                         expected_signature=self.loaded_config_signature,
-                        file_suffix_styles=file_rules)
+                        file_suffix_styles=file_rules,
+                        external_templates=external_templates,
+                        inactive_templates=self.inactive_templates_draft())
                 except Exception as exc:
                     QMessageBox.warning(self, "StyleCore", tr(
                         "Could not save shared JSON. Reload settings "
@@ -1680,8 +2047,6 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
             self.enabled_changed_callback(self.enabled_checkbox.isChecked())
         if shared_changed and self.root_folder_changed_callback:
             self.root_folder_changed_callback()
-
-
 
 
         self._last_save_succeeded = True
