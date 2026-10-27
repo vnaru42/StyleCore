@@ -9,10 +9,13 @@
 
 ## Installation
 
-1. Download the StyleCore plugin ZIP.
-2. In QGIS, open **Plugins > Manage and Install Plugins > Install from ZIP**.
-3. Select the ZIP and install it.
-4. Open **Settings > Options > StyleCore** to create or load a configuration.
+StyleCore is availible i the Official QGIS Repository.
+
+1. Open QGIS
+2. Find plugins in the Menu Toolbar and click Manage and Install Plugins
+4. Go to all and search: StyleCore
+5. Install plugin
+6. After installation, you need to either create or load a configuration...
 
 The toolbar dropdown also contains unobtrusive **Help & Documentation** and **Report an Issue** links.
 
