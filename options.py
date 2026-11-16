@@ -5,6 +5,7 @@ import tempfile
 import uuid
 
 from qgis.core import QgsProject, QgsMessageLog, Qgis
+from qgis.PyQt import sip
 from qgis.PyQt.QtCore import QSettings, Qt, QEvent, QTimer
 from qgis.PyQt.QtGui import QIcon, QPalette, QColor, QFont
 from qgis.PyQt.QtWidgets import (
@@ -45,6 +46,7 @@ from .language import tr
 from .config import (
     BUNDLED_CONFIG_DIR,
     CONFIG_FILE_KEY,
+    CONFIG_UNLOADED_KEY,
     DEVELOPER_MODE_KEY,
     ENABLED_KEY,
     ROOT_FOLDER_KEY,
@@ -177,6 +179,23 @@ class _StyleCoreOptionsAcceptGuard(QWidget):
         self._blocked_release = None
         self._checking = False
         self._replaying = False
+        page.destroyed.connect(self._detach)
+
+    def _detach(self, *_):
+        """Stop filtering before the page's child objects are destroyed."""
+        self.page = None
+        self._blocked_release = None
+        app = QApplication.instance()
+        if app is not None and not sip.isdeleted(app) and not sip.isdeleted(self):
+            app.removeEventFilter(self)
+
+    def _page_is_alive(self):
+        if sip.isdeleted(self) or self.page is None:
+            return False
+        if sip.isdeleted(self.page):
+            self._detach()
+            return False
+        return True
 
     def _in_own_options(self, widget):
         parent = widget
@@ -211,6 +230,8 @@ class _StyleCoreOptionsAcceptGuard(QWidget):
             QApplication.restoreOverrideCursor()
 
     def eventFilter(self, obj, event):
+        if not self._page_is_alive():
+            return False
         if self._checking or self._replaying or not self.page.isVisible():
             return False
         kind = event.type()
@@ -268,6 +289,12 @@ class _StyleCoreOptionsAcceptGuard(QWidget):
         return False
 
     def _finish_approved_click(self, button):
+        # A queued click may outlive the options dialog or its button.
+        if not self._page_is_alive():
+            return
+        if sip.isdeleted(button):
+            self.page._skip_next_native_apply = False
+            return
         if not self.page.isVisible() or not button.isEnabled():
             self.page._skip_next_native_apply = False
             return
@@ -369,10 +396,13 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         config_buttons = QHBoxLayout()
         self.load_config_button = QPushButton(tr('Load configuration...'))
         self.new_config_button = QPushButton(tr('New configuration...'))
+        self.unload_config_button = QPushButton(tr('Unload configuration'))
+        self.unload_config_button.clicked.connect(self.unload_configuration)
         self.load_config_button.clicked.connect(self.choose_configuration_file)
         self.new_config_button.clicked.connect(self.create_configuration_file)
         config_buttons.addWidget(self.load_config_button)
         config_buttons.addWidget(self.new_config_button)
+        config_buttons.addWidget(self.unload_config_button)
         config_buttons.addStretch()
         config_layout.addLayout(config_buttons)
         layout.addWidget(config_group)
@@ -565,14 +595,10 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         # via isValid(), so intercept the user action before the dialog closes.
         self._accept_guard = _StyleCoreOptionsAcceptGuard(self)
         QApplication.instance().installEventFilter(self._accept_guard)
-        self.destroyed.connect(self._remove_accept_guard)
-
-    def _remove_accept_guard(self, *_):
-        app = QApplication.instance()
-        if app is not None and getattr(self, '_accept_guard', None):
-            app.removeEventFilter(self._accept_guard)
 
     def current_root_folder(self):
+        if QSettings().value(CONFIG_UNLOADED_KEY, False, type=bool):
+            return ""
         if load_external_config().get('root_mode') == 'config_dir':
             return get_root_folder()
         return self.root_folder_edit.text().strip()
@@ -739,6 +765,7 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         self.config_path_edit.setText(path or '')
         label = (get_configuration_name() or "None") if load_external_config() else tr("No configuration loaded")
         self.active_configuration_label.setText(tr("Active configuration: ") + label)
+        self.unload_config_button.setEnabled(bool(path))
         path = get_config_file()
 
         # Display the active path in the editable field only; do not duplicate it.
@@ -751,6 +778,7 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
     def activate_configuration(self, path, config):
         settings = QSettings()
         settings.setValue(CONFIG_FILE_KEY, path)
+        settings.setValue(CONFIG_UNLOADED_KEY, False)
         settings.remove(ROOT_FOLDER_KEY)
 
         self.root_folder_edit.setText(get_root_folder())
@@ -764,6 +792,32 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         if self.root_folder_changed_callback:
             self.root_folder_changed_callback()
 
+    def unload_configuration(self):
+        """Disconnect this QGIS profile without touching shared configuration files."""
+        if not get_config_file():
+            return
+        answer = QMessageBox.question(
+            self, 'StyleCore',
+            tr('Unload the active configuration? The configuration file will not be deleted.'),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        settings = QSettings()
+        settings.setValue(CONFIG_UNLOADED_KEY, True)
+        settings.setValue(CONFIG_FILE_KEY, '')
+        settings.setValue(DEVELOPER_MODE_KEY, False)
+        self.developer_checkbox.setChecked(False)
+        self._developer_data_loaded = False
+        self._approved_shared_fingerprint = None
+        self.loaded_config_signature = None
+        self.root_folder_edit.setText('')
+        self.refresh_configuration_ui()
+        self.load_settings(include_developer=True)
+        self.update_developer_ui()
+        # Existing layers and QGIS project settings are not modified.
+
     def load_configuration_from_path(self):
         path = self.config_path_edit.text().strip().strip('"')
         if not path:
@@ -775,6 +829,7 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
                 tr('The configuration path is unavailable or the JSON is invalid:') + '\n' + path)
             return
         self.activate_configuration(path, config)
+        QMessageBox.information(self, 'StyleCore', tr('Configuration loaded successfully.'))
 
     def choose_configuration_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -796,6 +851,7 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
             return
 
         self.activate_configuration(path, config)
+        QMessageBox.information(self, 'StyleCore', tr('Configuration loaded successfully.'))
 
     def create_configuration_file(self):
         dialog = QDialog(self)
@@ -1568,6 +1624,13 @@ class StyleCoreOptionsPage(QgsOptionsPageWidget):
         self.personal_remove_button.setEnabled(self.personal_table.currentRow() >= 0)
 
     def update_developer_ui(self, *args):
+        if self.developer_checkbox.isChecked() and not load_external_config():
+            # No shared configuration exists to edit. Keep ordinary Options
+            # usable, without entering shared-config save/validation paths.
+            self.developer_checkbox.setChecked(False)
+            QMessageBox.warning(self, 'StyleCore',
+                tr('Load or create a configuration before enabling Developer Mode.'))
+            return
         if self.developer_checkbox.isChecked() and not self._developer_data_loaded:
             self.load_settings(include_developer=True)
         self.update_shared_edit_mode()

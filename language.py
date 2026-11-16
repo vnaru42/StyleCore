@@ -19,6 +19,14 @@ _DANISH = {
     'Choose QML style': 'Vælg QML-style',
     'Close': 'Luk',
     'Configuration': 'Konfiguration',
+    'Unload configuration': 'Frakobl konfiguration',
+    'Unload the active configuration? The configuration file will not be deleted.': (
+        'Vil du frakoble den aktive konfiguration? Konfigurationsfilen bliver ikke slettet.'
+    ),
+    'Configuration loaded successfully.': 'Konfiguration indlæst.',
+    'Load or create a configuration before enabling Developer Mode.': (
+        'Indlæs eller opret en konfiguration, før du aktiverer udviklertilstand.'
+    ),
     'Configuration file unavailable: ': 'Konfigurationsfil ikke tilgængelig: ',
     'Confirm developer action': 'Bekræft udviklerhandling',
     'Confirm developer code:': 'Bekræft udviklerkode:',

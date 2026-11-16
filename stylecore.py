@@ -368,11 +368,17 @@ class StyleCore:
             return
         if not self.iface.newProject(True):
             return
+        # Read the shared template without QgisInterface.addProject(), which
+        # registers normal project openings in QGIS Recent Projects.
+        # Never modify QGIS' global recent-project settings or history.
+        project = QgsProject.instance()
         try:
-            if not self.iface.addProject(path):
+            if not project.read(path):
+                project.setFileName('')
                 self.iface.messageBar().pushWarning('StyleCore', 'Could not load template: ' + path)
                 return
-            project = QgsProject.instance()
+            # The source template must never be the active save destination.
+            project.setFileName('')
             # Styles from a saved working project are never overwritten.
             # Only this explicit menu action can trigger template refresh.
             if (template_name.casefold() in {n.casefold() for n in get_restyle_templates()}
@@ -393,7 +399,13 @@ class StyleCore:
                 f"Opened original template (unsaved copy): {path}",
                 'StyleCore', level=Qgis.MessageLevel.Info)
         except Exception as exc:
+            project.setFileName('')
             self.iface.messageBar().pushWarning('StyleCore', 'Template open failed: ' + str(exc))
+        finally:
+            # Direct QgsProject.read() does not emit iface.projectRead. Reset
+            # StyleCore's loading guard so future manually added layers are styled.
+            self.project_read_complete()
+            self.iface.mapCanvas().refresh()
 
     def refresh_print_menu(self):
         """Populate the Print Layouts submenu directly from shared QPT files."""

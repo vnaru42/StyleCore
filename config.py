@@ -16,6 +16,7 @@ ENABLED_KEY = "StyleCore/enabled"
 ROOT_FOLDER_KEY = "StyleCore/root_folder"
 DEVELOPER_MODE_KEY = "StyleCore/developer_mode"
 CONFIG_FILE_KEY = "StyleCore/config_file"
+CONFIG_UNLOADED_KEY = "StyleCore/config_unloaded"
 
 BUNDLED_CONFIG_DIR = os.path.join(os.path.dirname(__file__), "config")
 BUNDLED_CONFIG_FILENAMES = ("stylecore_config.json", "StyleCore_config.json")
@@ -46,6 +47,8 @@ def get_bundled_config_file():
 
 def get_config_file():
     """Return the last selected config, otherwise the bundled default config."""
+    if QSettings().value(CONFIG_UNLOADED_KEY, False, type=bool):
+        return ""
     selected = QSettings().value(CONFIG_FILE_KEY, "", type=str).strip()
     # A missing selected UNC JSON must not switch to another organization's
     # bundled settings when the server is temporarily unavailable.
@@ -74,6 +77,8 @@ def get_configuration_name():
 
 
 def get_root_folder():
+    if QSettings().value(CONFIG_UNLOADED_KEY, False, type=bool):
+        return ""
     config = load_external_config()
     if config.get("root_mode") == "config_dir":
         config_path = get_config_file()

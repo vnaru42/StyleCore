@@ -1,6 +1,6 @@
 # StyleCore
 
-**StyleCore 1.9.0** is a QGIS plugin for managing QML layer styles, project templates, and print layouts from a local or shared configuration. It is designed for teams that want consistent QGIS styling without manually applying styles every time a layer is added.
+**StyleCore 1.9.1** is a QGIS plugin for managing QML layer styles, project templates, and print layouts from a local or shared configuration. It is designed for teams that want consistent QGIS styling without manually applying styles every time a layer is added.
 
 **Requirements:** QGIS 3.44 (see `metadata.txt` for the official supported version range). Data sources, SVG files and network shares must be accessible to each user. Optional fonts can be supplied in the active resource root as described below.
 
@@ -9,13 +9,10 @@
 
 ## Installation
 
-StyleCore is availible i the Official QGIS Repository.
-
-1. Open QGIS
-2. Find plugins in the Menu Toolbar and click Manage and Install Plugins
-4. Go to all and search: StyleCore
-5. Install plugin
-6. After installation, you need to either create or load a configuration...
+1. Download the StyleCore plugin ZIP.
+2. In QGIS, open **Plugins > Manage and Install Plugins > Install from ZIP**.
+3. Select the ZIP and install it.
+4. Open **Settings > Options > StyleCore** to create or load a configuration.
 
 The toolbar dropdown also contains unobtrusive **Help & Documentation** and **Report an Issue** links.
 
@@ -36,7 +33,7 @@ A configuration can reference:
 
 By default, **Use configuration file folder as resource root** makes the folder containing the JSON file the resource root (`root_mode: "config_dir"`). Moving the JSON file together with its resource folders lets users reconnect by loading the JSON from its new location.
 
-Uncheck this option to choose a separate root folder (`root_mode: "custom"`). Shared resource paths can be relative to the active root; external absolute paths must still be accessible. The last selected configuration is remembered.
+Uncheck this option to choose a separate root folder (`root_mode: "custom"`). Shared resource paths can be relative to the active root; external absolute paths must still be accessible. Use **Unload configuration** in StyleCore Settings to disconnect the active configuration for the current QGIS profile without deleting the JSON file or shared resources. The unloaded state remains after restarting QGIS. The last selected configuration is remembered.
 
 ### Shared configurations and developer settings
 
